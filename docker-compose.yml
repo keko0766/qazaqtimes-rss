@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    container_name: geo-news-bot
+    environment:
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
+      TZ: ${APP_TIMEZONE:-Asia/Almaty}
+      USE_OLLAMA: ${USE_OLLAMA:-false}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./sources.json:/app/sources.json:ro
+    command: python app/main.py all
