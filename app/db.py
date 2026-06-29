@@ -55,9 +55,9 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             continue
         try:
             conn.execute(sql)
-            print(f"[db] added column: {column}")
+            print(f"[db] колонка қосылды: {column}")
         except sqlite3.OperationalError as exc:
-            print(f"[db] migration skipped for {column}: {exc}")
+            print(f"[db] migration өткізіліп кетті ({column}): {exc}")
 
 
 def get_existing_titles(conn: sqlite3.Connection) -> list[str]:

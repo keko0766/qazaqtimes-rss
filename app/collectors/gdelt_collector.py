@@ -37,16 +37,16 @@ def collect_gdelt(
         try:
             response = fetch_gdelt(params=params, timeout=timeout)
             if response.status_code == 429:
-                print(f"[gdelt] query '{query}': rate limited, waiting {retry_delay_seconds} seconds")
+                print(f"[gdelt] сұрау '{query}': rate limit, {retry_delay_seconds} секунд күту")
                 sleep(retry_delay_seconds)
                 response = fetch_gdelt(params=params, timeout=timeout)
                 if response.status_code == 429:
-                    print(f"[gdelt] query '{query}': still rate limited, skipping")
+                    print(f"[gdelt] сұрау '{query}': rate limit қайталанды, өткізіледі")
                     continue
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
-            print(f"[gdelt] query '{query}': cannot fetch data: {exc}")
+            print(f"[gdelt] сұрау '{query}': дерек жүктелмеді: {exc}")
             continue
         finally:
             if delay_seconds > 0:

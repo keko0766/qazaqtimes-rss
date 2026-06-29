@@ -1,25 +1,25 @@
 # geo-news-bot
 
-Лёгкий Docker MVP для геополитического дайджеста:
+Геосаяси дайджест жасауға арналған жеңіл Docker MVP:
 
-RSS/GDELT -> SQLite -> deduplicate -> classify/filter -> event cluster -> Markdown digest -> optional Ollama writer fallback.
+RSS/GDELT -> SQLite -> дубльдерді алып тастау -> классификация/сүзгі -> оқиға кластері -> Markdown дайджест -> қосымша Ollama жазушысы -> резерв шаблон.
 
-Проект сохраняет только метаданные: `title`, `url`, `source`, `published_at`, `summary`, `tags` и простые score-поля. Полные тексты статей не скачиваются, автопубликации нет.
+Жоба тек метадеректерді сақтайды: `title`, `url`, `source`, `published_at`, `summary`, `tags` және қарапайым бағалау өрістері. Мақалалардың толық мәтіні жүктелмейді, автожариялау жоқ.
 
-## Quick Start
+## Жылдам бастау
 
-Default-режим запускает только `app` и не скачивает Ollama image:
+Әдепкі режим тек `app` сервисін іске қосады және Ollama image жүктемейді:
 
 ```bash
 docker compose run --rm app python app/main.py all --mode fast
 ```
 
-После запуска:
+Іске қосылғаннан кейін:
 
 - SQLite: `data/news.sqlite3`
-- Digest: `output/digest_YYYY-MM-DD.md`
+- Дайджест: `output/digest_YYYY-MM-DD.md`
 
-## Commands
+## Командалар
 
 ```bash
 docker compose run --rm app python app/main.py collect
@@ -27,39 +27,39 @@ docker compose run --rm app python app/main.py report
 docker compose run --rm app python app/main.py all
 ```
 
-- `collect`: собирает RSS/GDELT, дедуплицирует, классифицирует и сохраняет записи.
-- `report`: строит Markdown digest из сохранённых записей.
-- `all`: делает оба шага.
+- `collect`: RSS/GDELT жинайды, дубль жазбаларды алып тастайды, классификация жасап, жазбаларды сақтайды.
+- `report`: сақталған жазбалардан Markdown дайджест құрастырады.
+- `all`: екі қадамды қатар орындайды.
 
-## Modes
+## Режимдер
 
 ```bash
 docker compose run --rm app python app/main.py all --mode fast
 docker compose run --rm app python app/main.py all --mode normal
 ```
 
-- `fast`: RSS only, default.
+- `fast`: тек RSS, әдепкі режим.
 - `normal`: RSS + GDELT.
 
 ## GUI
 
-Small local GUI runs behind an optional profile:
+Шағын жергілікті GUI қосымша профиль арқылы іске қосылады:
 
 ```bash
 docker compose --profile gui up gui
 ```
 
-Open `http://localhost:8000`. The GUI can run `collect`, `report` or `all`, choose `fast`/`normal`, show command logs and display the latest digest. It does not start Ollama unless you also run the Ollama profile.
+Браузерден `http://localhost:8000` ашыңыз. GUI арқылы `collect`, `report` немесе `all` іске қосуға, `fast`/`normal` таңдауға, журналды көруге, соңғы дайджесті оқуға және жүріп тұрған тапсырманы тоқтатуға болады. GUI Ollama-ны өзі іске қоспайды; ол үшін Ollama профилі бөлек қолданылады.
 
-## Sources
+## Дереккөздер
 
-Активные RSS источники лежат в `sources.json`: White House, Defense.gov, UN News, Kremlin, BBC World, Al Jazeera, The Guardian World, Deutsche Welle, France 24, плюс GDELT config.
+Белсенді RSS дереккөздері `sources.json` ішінде: White House, Defense.gov, UN News, Kremlin, BBC World, Al Jazeera, The Guardian World, Deutsche Welle, France 24 және GDELT баптауы.
 
-Отключённые кандидаты вынесены в `sources.disabled.json`, чтобы основной список оставался коротким.
+Өшірілген кандидаттар `sources.disabled.json` ішіне шығарылған, сондықтан негізгі тізім қысқа болып қалады.
 
-## Optional Ollama
+## Қосымша Ollama
 
-Ollama выключен по умолчанию:
+Ollama әдепкі бойынша өшірулі:
 
 ```env
 USE_OLLAMA=false
@@ -68,27 +68,27 @@ OLLAMA_MODEL=qwen2.5:3b
 OLLAMA_TIMEOUT=180
 ```
 
-Запуск Ollama container:
+Ollama контейнерін іске қосу:
 
 ```bash
 docker compose --profile ollama up -d ollama
 ```
 
-Model pull:
+Модель жүктеу:
 
 ```bash
 docker compose --profile ollama --profile setup run --rm ollama-pull
 ```
 
-Report через Ollama:
+Ollama арқылы есеп жасау:
 
 ```bash
 docker compose --profile ollama run --rm -e USE_OLLAMA=true app python app/main.py report --mode fast
 ```
 
-Если Ollama недоступен, приложение пишет один warning и использует fallback-шаблоны. Модель хранится в Docker volume `ollama_data`; первый download может быть большим, особенно на Mac.
+Ollama қолжетімсіз болса, қосымша бір ескерту шығарып, резерв шаблондарды қолданады. Модель Docker volume `ollama_data` ішінде сақталады; алғашқы жүктеу үлкен болуы мүмкін, әсіресе Mac-та.
 
-`docker-compose.gpu.yml` оставлен только для будущего ПК с NVIDIA. Нужны NVIDIA driver и NVIDIA Container Toolkit:
+`docker-compose.gpu.yml` тек болашақ NVIDIA бар ПК үшін қалдырылған. NVIDIA driver және NVIDIA Container Toolkit керек:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ollama up -d ollama
@@ -96,16 +96,16 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ollama 
 
 ## GDELT 429
 
-Если GDELT вернул `429 Too Many Requests`, collector ждёт `retry_delay_seconds`, делает один повтор и при повторном 429 пропускает query. RSS-сбор и report продолжаются.
+Егер GDELT `429 Too Many Requests` қайтарса, жинаушы `retry_delay_seconds` күтіп, бір рет қайталайды. Қайтадан 429 болса, сол сұрау өткізіледі. RSS жинау және есеп жасау жалғаса береді.
 
-Что можно сделать:
+Не істеуге болады:
 
-- запустить позже;
-- уменьшить `gdelt.queries`;
-- уменьшить `gdelt.maxrecords`;
-- увеличить `gdelt.delay_seconds`;
-- использовать `--mode fast`.
+- кейінірек іске қосу;
+- `gdelt.queries` санын азайту;
+- `gdelt.maxrecords` азайту;
+- `gdelt.delay_seconds` ұлғайту;
+- `--mode fast` қолдану.
 
-## Manual Review
+## Қолмен тексеру
 
-Черновики не являются готовыми публикациями. Перед публикацией откройте `output/digest_YYYY-MM-DD.md`, проверьте ссылки, даты, имена, цифры и формулировки. Добавляйте собственный анализ только после ручной проверки фактов.
+Мақала жобасы дайын жарияланым емес. Жариялау алдында `output/digest_YYYY-MM-DD.md` файлын ашып, сілтемелерді, даталарды, есімдерді, сандарды және тұжырымдарды тексеріңіз. Өз талдауыңызды тек факт қолмен тексерілгеннен кейін қосыңыз.

@@ -14,11 +14,11 @@ from app.utils.datetime import today_str
 
 
 TOPIC_RULES = {
-    "Russia / Ukraine": {"russia", "ukraine"},
-    "USA / Iran": {"usa", "iran"},
-    "China / Taiwan": {"china", "taiwan"},
-    "NATO / EU": {"nato", "eu"},
-    "Middle East": {"middle_east", "iran", "israel", "gaza", "lebanon", "syria", "hormuz"},
+    "Ресей / Украина": {"russia", "ukraine"},
+    "АҚШ / Иран": {"usa", "iran"},
+    "Қытай / Тайвань": {"china", "taiwan"},
+    "НАТО / ЕО": {"nato", "eu"},
+    "Таяу Шығыс": {"middle_east", "iran", "israel", "gaza", "lebanon", "syria", "hormuz"},
 }
 
 
@@ -33,27 +33,27 @@ def generate_report(items: list[dict], output_dir: str | Path) -> Path:
     topic_clusters = select_topic_clusters(clusters)
 
     lines: list[str] = [
-        f"# Geopolitical Digest — {today}",
+        f"# Геосаяси дайджест — {today}",
         "",
-        "## Главное",
+        "## Негізгі жаңалықтар",
         "",
         *build_headlines(top_clusters),
         "",
-        "## Главные события",
+        "## Басты оқиғалар",
         "",
         *build_top_events(top_clusters),
         "",
-        "## По направлениям",
+        "## Бағыттар бойынша",
         "",
         *build_topic_sections(topic_clusters),
         "",
-        "## Черновики статей",
+        "## Мақала жобалары",
         "",
         *build_draft_articles(top_clusters),
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[report] created {path}")
+    print(f"[report] жасалды: {path}")
     return path
 
 
@@ -86,14 +86,14 @@ def is_report_topic(cluster: dict) -> bool:
         return True
     if tags & {"nato", "eu"}:
         return True
-    if tags & TOPIC_RULES["Middle East"]:
+    if tags & TOPIC_RULES["Таяу Шығыс"]:
         return True
     return "sanctions" in tags and bool(tags & {"usa", "iran", "russia", "ukraine", "china", "nato", "eu"})
 
 
 def build_headlines(clusters: list[dict]) -> list[str]:
     if not clusters:
-        return ["- Нет сильных событий для дайджеста."]
+        return ["- Дайджестке кіретін жеткілікті маңызды оқиғалар жоқ."]
 
     lines = []
     for cluster in clusters[:8]:
@@ -105,7 +105,7 @@ def build_headlines(clusters: list[dict]) -> list[str]:
 
 def build_top_events(clusters: list[dict]) -> list[str]:
     if not clusters:
-        return ["Нет данных."]
+        return ["Дерек жоқ."]
 
     lines: list[str] = []
     for cluster in clusters:
@@ -121,14 +121,14 @@ def build_topic_sections(clusters: list[dict]) -> list[str]:
         lines.extend([f"### {section}", ""])
         section_clusters = grouped.get(section, [])[:8]
         if not section_clusters:
-            lines.extend(["- Нет заметных событий в сохранённой выборке.", ""])
+            lines.extend(["- Сақталған іріктемеде айқын оқиға жоқ.", ""])
             continue
         for cluster in section_clusters:
             sources = ", ".join(cluster["sources"][:3])
             tags = format_tags(cluster)
             lines.append(f"- **{cluster['title']}** — {short_summary(cluster)}")
-            lines.append(f"  Tags: {tags}. Sources: {sources}.")
-            lines.append(f"  Links: {format_links(cluster, limit=3)}")
+            lines.append(f"  Тегтер: {tags}. Дереккөздер: {sources}.")
+            lines.append(f"  Сілтемелер: {format_links(cluster, limit=3)}")
         lines.append("")
     return lines
 
@@ -139,15 +139,15 @@ def group_clusters_by_topic(clusters: list[dict]) -> dict[str, list[dict]]:
         tags = set(cluster.get("tags") or [])
         text = cluster_text(cluster)
         if {"russia", "ukraine"} <= tags:
-            grouped["Russia / Ukraine"].append(cluster)
+            grouped["Ресей / Украина"].append(cluster)
         if is_usa_iran(tags):
-            grouped["USA / Iran"].append(cluster)
+            grouped["АҚШ / Иран"].append(cluster)
         if is_china_taiwan(tags, text):
-            grouped["China / Taiwan"].append(cluster)
+            grouped["Қытай / Тайвань"].append(cluster)
         if tags & {"nato", "eu"}:
-            grouped["NATO / EU"].append(cluster)
-        if tags & TOPIC_RULES["Middle East"]:
-            grouped["Middle East"].append(cluster)
+            grouped["НАТО / ЕО"].append(cluster)
+        if tags & TOPIC_RULES["Таяу Шығыс"]:
+            grouped["Таяу Шығыс"].append(cluster)
     return grouped
 
 
@@ -155,16 +155,16 @@ def render_event_block(cluster: dict, heading_level: int = 3) -> list[str]:
     marker = "#" * heading_level
     links = [link for link in cluster["links"] if link.get("url")][:5]
     return [
-        f"{marker} Event: {cluster['title']}",
+        f"{marker} Оқиға: {cluster['title']}",
         "",
-        f"Short summary: {short_summary(cluster)}",
+        f"Қысқаша түйін: {short_summary(cluster)}",
         "",
-        f"Tags: {format_tags(cluster)}",
+        f"Тегтер: {format_tags(cluster)}",
         "",
-        "Sources:",
+        "Дереккөздер:",
         *[f"- {source}" for source in cluster["sources"][:5]],
         "",
-        "Links:",
+        "Сілтемелер:",
         *[f"- [{link_label(link)}]({link['url']})" for link in links],
     ]
 
@@ -178,20 +178,20 @@ def build_draft_articles(clusters: list[dict]) -> list[str]:
         and has_draft_ready_summary(cluster)
     ][:3]
     if not candidates:
-        return ["Нет достаточно сильных event clusters для черновиков."]
+        return ["Мақала жобасына жеткілікті күшті оқиға кластері жоқ."]
 
     lines: list[str] = []
     ollama_enabled = use_ollama()
-    print(f"[report] draft writer configured: {'ollama' if ollama_enabled else 'fallback'}")
+    print(f"[report] мақала жазу режимі: {'ollama' if ollama_enabled else 'резерв'}")
     for cluster in candidates:
         if ollama_enabled:
             ollama_text = generate_draft(cluster)
             if ollama_text:
-                print(f"[report] draft writer mode=ollama title='{cluster['title']}'")
+                print(f"[report] мақала жазу режимі=ollama тақырып='{cluster['title']}'")
                 lines.extend(ollama_text.splitlines())
                 lines.append("")
                 continue
-        print(f"[report] draft writer mode=fallback title='{cluster['title']}'")
+        print(f"[report] мақала жазу режимі=резерв тақырып='{cluster['title']}'")
         lines.extend(render_article(cluster))
         lines.append("")
     return lines
@@ -220,15 +220,15 @@ def render_article(cluster: dict) -> list[str]:
         "",
         context_text(profile),
         "",
-        "**Почему это важно:**",
+        "**Неге маңызды:**",
         "",
         importance_text(profile),
         "",
-        "**Что дальше:**",
+        "**Әрі қарай не күту керек:**",
         "",
         next_steps_text(profile),
         "",
-        "**Источники:**",
+        "**Дереккөздер:**",
         "",
         *[f"- [{link['title'] or link['source']}]({link['url']}) — {link['source']}" for link in cluster["links"][:5] if link.get("url")],
     ]
@@ -254,89 +254,89 @@ def article_profile(cluster: dict) -> str:
 def lead_text(profile: str, cluster: dict, summary: str) -> str:
     sources = ", ".join(cluster["sources"][:3])
     if profile == "russia_ukraine":
-        return f"{summary} Сообщения {sources} указывают на развитие военной динамики вокруг Украины, ударов по инфраструктуре или давления на линии фронта."
+        return f"{summary} {sources} хабарлары Украина төңірегіндегі әскери динамикаға, инфрақұрылымға соққыларға немесе майдандағы қысымға назар аудартады."
     if profile == "usa_iran":
-        return f"{summary} В центре события — переговоры, санкции, ядерная тема, безопасность Ормузского пролива или американские базы в регионе."
+        return f"{summary} Оқиғаның өзегінде келіссөздер, санкциялар, ядролық тақырып, Ормуз бұғазының қауіпсіздігі немесе аймақтағы АҚШ базалары тұр."
     if profile == "china_taiwan":
-        return f"{summary} Сюжет относится к балансу сил вокруг Тайваня, технологическим ограничениям, торговле или военному давлению в регионе."
+        return f"{summary} Бұл сюжет Тайвань маңындағы күш тепе-теңдігіне, технологиялық шектеулерге, саудаға немесе аймақтағы әскери қысымға қатысты."
     if profile == "nato_eu":
-        return f"{summary} Речь идёт о координации союзников, европейской безопасности и практических решениях НАТО или ЕС."
+        return f"{summary} Мұнда одақтастардың үйлесімі, Еуропа қауіпсіздігі және НАТО немесе ЕО деңгейіндегі практикалық шешімдер сөз болып отыр."
     if profile == "sanctions":
-        return f"{summary} Санкционная линия показывает, какие инструменты давления используют государства и как это влияет на переговорные позиции."
+        return f"{summary} Санкциялық бағыт мемлекеттердің қандай қысым құралдарын қолданатынын және оның келіссөз позицияларына қалай әсер ететінін көрсетеді."
     if profile == "middle_east":
-        return f"{summary} Событие связано с региональной безопасностью на Ближнем Востоке, перемирием, ударами или угрозами для морских маршрутов."
-    return f"{summary} Несколько источников связывают событие с международной политикой и решениями государственных игроков."
+        return f"{summary} Оқиға Таяу Шығыстағы өңірлік қауіпсіздікке, бітімге, соққыларға немесе теңіз маршруттарына төнген қауіптерге байланысты."
+    return f"{summary} Бірнеше дереккөз бұл оқиғаны халықаралық саясатпен және мемлекеттік ойыншылардың шешімдерімен байланыстырады."
 
 
 def context_text(profile: str) -> str:
     if profile == "russia_ukraine":
-        return "Для России и Украины такие сообщения важны в связке с ударами по энергетике, состоянием фронта, поставками вооружений и реакцией союзников Киева."
+        return "Ресей мен Украина үшін мұндай хабарлар энергетикаға соққылармен, майдан жағдайымен, қару жеткізілімімен және Киев одақтастарының реакциясымен бірге бағаланады."
     if profile == "usa_iran":
-        return "Американо-иранская повестка держится на трёх узлах: ядерные ограничения, санкционное давление и безопасность Персидского залива."
+        return "АҚШ-Иран күн тәртібі үш түйінге тіреледі: ядролық шектеулер, санкциялық қысым және Парсы шығанағының қауіпсіздігі."
     if profile == "china_taiwan":
-        return "Напряжение вокруг Тайваня часто проявляется через военные манёвры, экспортные ограничения, полупроводники и заявления США или союзников."
+        return "Тайвань маңындағы шиеленіс көбіне әскери маневрлер, экспорттық шектеулер, жартылай өткізгіштер және АҚШ пен одақтастардың мәлімдемелері арқылы көрінеді."
     if profile == "nato_eu":
-        return "Решения НАТО и ЕС задают рамку для оборонного планирования, помощи Украине и распределения нагрузки между союзниками."
+        return "НАТО мен ЕО шешімдері қорғаныс жоспарлауына, Украинаға көмекке және одақтастар арасындағы жүктемені бөлуге рамка береді."
     if profile == "sanctions":
-        return "Санкции обычно идут рядом с дипломатией и военным давлением: они ограничивают ресурсы, но требуют координации с партнёрами."
+        return "Санкциялар әдетте дипломатия және әскери қысыммен қатар жүреді: олар ресурстарды шектейді, бірақ серіктестермен үйлесімді қажет етеді."
     if profile == "middle_east":
-        return "Ближневосточные кризисы быстро переходят из локальных столкновений в вопросы международной дипломатии, энергетики и безопасности маршрутов."
-    return "Контекст зависит от реакции официальных институтов, соседних государств и международных организаций."
+        return "Таяу Шығыстағы дағдарыстар жергілікті қақтығыстан халықаралық дипломатия, энергетика және маршрут қауіпсіздігі мәселесіне тез айналады."
+    return "Контекст ресми институттардың, көрші мемлекеттердің және халықаралық ұйымдардың реакциясына байланысты."
 
 
 def importance_text(profile: str) -> str:
     if profile == "russia_ukraine":
-        return "Изменения на этом направлении влияют на темп войны, устойчивость украинской инфраструктуры и готовность союзников расширять поддержку."
+        return "Бұл бағыттағы өзгерістер соғыс қарқынына, украин инфрақұрылымының тұрақтылығына және одақтастардың қолдауды кеңейту дайындығына әсер етеді."
     if profile == "usa_iran":
-        return "Любая эскалация между США и Ираном повышает риск ударов по региональным базам, срыва переговоров и новых санкционных решений."
+        return "АҚШ пен Иран арасындағы кез келген эскалация өңірлік базаларға соққы, келіссөздің үзілуі және жаңа санкция қаупін күшейтеді."
     if profile == "china_taiwan":
-        return "Тайваньская и технологическая повестка затрагивает безопасность в Азии, цепочки поставок чипов и стратегическую конкуренцию США и Китая."
+        return "Тайвань және технология тақырыбы Азия қауіпсіздігіне, чип жеткізу тізбектеріне және АҚШ-Қытай стратегиялық бәсекесіне әсер етеді."
     if profile == "nato_eu":
-        return "Такие решения показывают, насколько быстро западные институты готовы адаптировать оборону и политическую поддержку."
+        return "Мұндай шешімдер батыс институттарының қорғаныс пен саяси қолдауды қаншалықты тез бейімдей алатынын көрсетеді."
     if profile == "sanctions":
-        return "Санкции меняют стоимость внешнеполитических решений и показывают, какие отрасли считаются критическими для давления."
+        return "Санкциялар сыртқы саяси шешімдердің құнын өзгертеді және қысым үшін қандай салалар маңызды саналатынын көрсетеді."
     if profile == "middle_east":
-        return "Региональная эскалация влияет на перемирия, гуманитарную ситуацию и безопасность судоходства, особенно вокруг Ормузского пролива."
-    return "Значение события определяется тем, последуют ли за ним официальные решения, санкции или дипломатические шаги."
+        return "Өңірлік эскалация бітімге, гуманитарлық ахуалға және әсіресе Ормуз бұғазы маңындағы кеме қатынасы қауіпсіздігіне әсер етеді."
+    return "Оқиғаның маңызы одан кейін ресми шешімдер, санкциялар немесе дипломатиялық қадамдар бола ма дегенге байланысты."
 
 
 def next_steps_text(profile: str) -> str:
     if profile == "russia_ukraine":
-        return "Дальше важны данные о последствиях ударов, заявления Киева и Москвы, а также решения НАТО и ЕС по помощи и ПВО."
+        return "Әрі қарай соққылардың салдары, Киев пен Мәскеудің мәлімдемелері, сондай-ақ НАТО мен ЕО-ның көмек және әуе қорғанысы бойынша шешімдері маңызды."
     if profile == "usa_iran":
-        return "Следить нужно за заявлениями США, Ирана, МАГАТЭ и стран Залива, а также за сигналами о санкциях и переговорах."
+        return "АҚШ, Иран, МАГАТЭ және шығанақ елдерінің мәлімдемелерін, сондай-ақ санкциялар мен келіссөздер туралы сигналдарды бақылау керек."
     if profile == "china_taiwan":
-        return "Ключевые индикаторы — реакция Пекина и Тайбэя, заявления Вашингтона, экспортные меры и активность флота или авиации."
+        return "Негізгі индикаторлар — Бейжің мен Тайбэйдің реакциясы, Вашингтон мәлімдемелері, экспорттық шаралар және флот не авиация белсенділігі."
     if profile == "nato_eu":
-        return "Следующими будут детали финансирования, сроки поставок, позиции отдельных стран и возможные решения на уровне министров."
+        return "Келесі кезекте қаржыландыру бөлшектері, жеткізу мерзімдері, жекелеген елдердің ұстанымы және министрлер деңгейіндегі шешімдер маңызды болады."
     if profile == "sanctions":
-        return "Нужно смотреть, кто присоединится к ограничениям, какие компании попадут под меры и будет ли ответная реакция."
+        return "Шектеулерге кім қосылатынын, қандай компаниялар шараға ілінетінін және қарсы реакция бола ма, соны бақылау керек."
     if profile == "middle_east":
-        return "Важны подтверждения о прекращении огня, сообщения о новых ударах и заявления ООН, США и региональных правительств."
-    return "Следующий шаг — сверить официальные заявления и реакцию ключевых участников."
+        return "Оқ атуды тоқтату туралы растаулар, жаңа соққылар жайлы хабарлар және БҰҰ, АҚШ пен өңір үкіметтерінің мәлімдемелері маңызды."
+    return "Келесі қадам — ресми мәлімдемелерді және негізгі қатысушылардың реакциясын салыстыру."
 
 
 def human_topic(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
     if {"russia", "ukraine"} <= tags:
-        return "Россия/Украина"
+        return "Ресей/Украина"
     if is_china_taiwan(tags, cluster_text(cluster)):
-        return "Китай/Тайвань"
+        return "Қытай/Тайвань"
     if is_usa_iran(tags):
-        return "США/Иран"
+        return "АҚШ/Иран"
     if tags & {"nato", "eu"}:
-        return "НАТО/ЕС"
+        return "НАТО/ЕО"
     if tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
-        return "Ближний Восток"
+        return "Таяу Шығыс"
     if "sanctions" in tags:
-        return "Санкции"
-    return "Геополитика"
+        return "Санкциялар"
+    return "Геосаясат"
 
 
 def short_summary(cluster: dict) -> str:
     summary = cluster.get("summary", "").strip()
-    if not summary or summary.startswith("Несколько источников сообщили"):
-        return "Событие подтверждается ссылками в блоке источников, но требует ручной редакторской формулировки."
+    if not summary or summary.startswith("Бірнеше дереккөз"):
+        return "Оқиға дереккөздер блогындағы сілтемелермен расталады, бірақ редакторлық қолмен нақтылауды қажет етеді."
     if len(summary) > 280:
         return summary[:279].rstrip() + "..."
     return summary
@@ -344,7 +344,7 @@ def short_summary(cluster: dict) -> str:
 
 def format_tags(cluster: dict) -> str:
     tags = [tag for tag in cluster.get("tags", []) if tag != "untagged"]
-    return ", ".join(tags) if tags else "none"
+    return ", ".join(tags) if tags else "жоқ"
 
 
 def format_links(cluster: dict, limit: int = 3) -> str:

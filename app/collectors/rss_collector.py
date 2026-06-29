@@ -14,10 +14,10 @@ def collect_rss_source(source: dict, timeout: int = 20, max_items: int = 30) -> 
     name = source.get("name", "Unknown source")
     url = source.get("url", "")
     if source.get("enabled", True) is False:
-        print(f"[rss] skip {name}: disabled in sources.json")
+        print(f"[rss] {name} өткізіледі: sources.json ішінде өшірулі")
         return []
     if not url:
-        print(f"[rss] skip {name}: missing URL")
+        print(f"[rss] {name} өткізіледі: URL жоқ")
         return []
 
     try:
@@ -28,12 +28,12 @@ def collect_rss_source(source: dict, timeout: int = 20, max_items: int = 30) -> 
         )
         response.raise_for_status()
     except requests.RequestException as exc:
-        print(f"[rss] {name}: cannot fetch feed: {exc}")
+        print(f"[rss] {name}: feed жүктеу сәтсіз: {exc}")
         return []
 
     parsed = feedparser.parse(response.content)
     if parsed.bozo:
-        print(f"[rss] {name}: feed has parsing warnings, continuing")
+        print(f"[rss] {name}: feed оқу ескертуі бар, жалғасады")
 
     items: list[dict] = []
     for entry in parsed.entries[:max_items]:

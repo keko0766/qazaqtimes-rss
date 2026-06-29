@@ -279,7 +279,7 @@ def best_summary(items: list[dict]) -> str:
         summary = item.get("summary", "").strip()
         if summary and not is_weak_gdelt_summary(summary):
             return summary
-    return "Несколько источников сообщили об одном и том же геополитическом событии."
+    return "Бірнеше дереккөз бір геосаяси оқиға туралы хабарлады."
 
 
 def unique_links(items: list[dict]) -> list[dict]:

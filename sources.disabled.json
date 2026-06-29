@@ -3,42 +3,42 @@
     {
       "name": "U.S. Department of State",
       "url": "https://www.state.gov/rss-feed/",
-      "note": "Returned HTML instead of a stable RSS feed during MVP testing."
+      "note": "MVP тесті кезінде тұрақты RSS орнына HTML қайтарды."
     },
     {
       "name": "NATO News",
       "url": "https://www.nato.int/cps/en/natohq/news.xml",
-      "note": "Keep as a candidate until the feed is verified again."
+      "note": "Feed қайта тексерілгенге дейін кандидат ретінде сақталады."
     },
     {
       "name": "IAEA Press Releases",
       "url": "https://www.iaea.org/feeds/press-releases/rss.xml",
-      "note": "May block automated RSS checks or change feed paths."
+      "note": "Автоматты RSS тексерулерін бұғаттауы немесе feed жолдарын өзгертуі мүмкін."
     },
     {
       "name": "President of Ukraine",
       "url": "https://www.president.gov.ua/en/rss",
-      "note": "May block automated RSS checks."
+      "note": "Автоматты RSS тексерулерін бұғаттауы мүмкін."
     },
     {
       "name": "Ukraine MFA",
       "url": "https://mfa.gov.ua/en/rss",
-      "note": "No stable RSS feed confirmed at this URL."
+      "note": "Бұл URL бойынша тұрақты RSS feed расталмады."
     },
     {
       "name": "Russia MFA",
       "url": "https://mid.ru/en/foreign_policy/news/rss/",
-      "note": "Redirected to a non-RSS page during MVP testing."
+      "note": "MVP тесті кезінде RSS емес бетке redirect жасады."
     },
     {
       "name": "European Council",
       "url": "https://www.consilium.europa.eu/en/rss/press-releases/",
-      "note": "May block automated RSS checks or change feed paths."
+      "note": "Автоматты RSS тексерулерін бұғаттауы немесе feed жолдарын өзгертуі мүмкін."
     },
     {
       "name": "China MFA",
       "url": "",
-      "note": "No stable official English RSS feed confirmed."
+      "note": "Тұрақты ресми ағылшын RSS feed расталмады."
     }
   ]
 }

@@ -36,20 +36,20 @@ RUN_MODES = {
 
 def main() -> int:
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Collect geopolitical news and generate a Markdown digest.")
-    parser.add_argument("command", choices=["collect", "report", "all"], help="What to run")
+    parser = argparse.ArgumentParser(description="Геосаяси жаңалықтарды жинап, Markdown дайджест жасайды.")
+    parser.add_argument("command", choices=["collect", "report", "all"], help="Іске қосылатын команда")
     parser.add_argument(
         "--mode",
         choices=RUN_MODES.keys(),
         default="fast",
-        help="Run mode: fast = RSS only, normal = RSS + GDELT",
+        help="Режим: fast = тек RSS, normal = RSS + GDELT",
     )
     args = parser.parse_args()
 
     settings = load_settings()
     settings["mode"] = args.mode
     log_timezone()
-    print(f"[main] run mode: {args.mode}")
+    print(f"[main] режим: {args.mode}")
 
     if args.command in {"collect", "all"}:
         collect(settings)
@@ -61,7 +61,7 @@ def main() -> int:
 def log_timezone() -> None:
     timezone = get_app_timezone()
     timezone_name = getattr(timezone, "key", str(timezone))
-    print(f"[main] timezone: {timezone_name}; local time: {now_local().isoformat(timespec='seconds')}")
+    print(f"[main] уақыт белдеуі: {timezone_name}; жергілікті уақыт: {now_local().isoformat(timespec='seconds')}")
 
 
 def load_settings() -> dict:
@@ -77,18 +77,18 @@ def load_settings() -> dict:
 def load_sources(path: str | Path) -> dict:
     source_path = Path(path)
     if not source_path.exists():
-        print(f"[sources] missing {source_path}; using empty source list")
+        print(f"[sources] {source_path} табылмады; бос дереккөз тізімі қолданылады")
         return {"rss_sources": [], "gdelt": {"enabled": False, "queries": []}}
 
     try:
         return json.loads(source_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        print(f"[sources] cannot parse {source_path}: {exc}")
+        print(f"[sources] {source_path} оқылмады: {exc}")
         return {"rss_sources": [], "gdelt": {"enabled": False, "queries": []}}
 
 
 def collect(settings: dict) -> None:
-    print("[main] preparing database")
+    print("[main] дерекқор дайындалып жатыр")
     init_db(settings["db_path"])
     sources = load_sources(settings["sources_path"])
 
@@ -96,7 +96,7 @@ def collect(settings: dict) -> None:
     gdelt_config = sources.get("gdelt", {})
     gdelt_config = apply_run_mode(gdelt_config, settings["mode"])
 
-    print("[main] collecting RSS")
+    print("[main] RSS жиналып жатыр")
     rss_items = collect_rss_sources(
         rss_sources,
         timeout=settings["timeout"],
@@ -106,7 +106,7 @@ def collect(settings: dict) -> None:
     gdelt_items = []
     if gdelt_config.get("enabled", True):
         print(
-            "[main] collecting GDELT "
+            "[main] GDELT жиналып жатыр "
             f"(maxrecords={gdelt_config['maxrecords']}, delay={gdelt_config['delay_seconds']}s)"
         )
         gdelt_items = collect_gdelt(
@@ -119,10 +119,10 @@ def collect(settings: dict) -> None:
             ),
         )
     else:
-        print("[main] skipping GDELT for this run mode")
+        print("[main] бұл режимде GDELT өткізіледі")
 
     raw_items = rss_items + gdelt_items
-    print(f"[main] collected raw items: {len(raw_items)}")
+    print(f"[main] жиналған бастапқы жазбалар: {len(raw_items)}")
 
     with get_connection(settings["db_path"]) as conn:
         existing_titles = get_existing_titles(conn)
@@ -131,9 +131,9 @@ def collect(settings: dict) -> None:
         relevant_items = filter_relevant_items(classified_items)
         inserted = insert_news(conn, relevant_items)
 
-    print(f"[main] unique candidates: {len(unique_items)}")
-    print(f"[main] relevant candidates: {len(relevant_items)}")
-    print(f"[main] inserted new records: {inserted}")
+    print(f"[main] бірегей кандидаттар: {len(unique_items)}")
+    print(f"[main] релевант кандидаттар: {len(relevant_items)}")
+    print(f"[main] жаңа жазбалар: {inserted}")
 
 
 def apply_run_mode(gdelt_config: dict, mode: str) -> dict:
@@ -148,7 +148,7 @@ def apply_run_mode(gdelt_config: dict, mode: str) -> dict:
 
 
 def report(settings: dict) -> None:
-    print("[main] generating report")
+    print("[main] есеп жасалып жатыр")
     init_db(settings["db_path"])
     with get_connection(settings["db_path"]) as conn:
         items = fetch_recent_news(conn)

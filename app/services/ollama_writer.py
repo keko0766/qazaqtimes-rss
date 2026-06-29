@@ -40,7 +40,7 @@ def generate_draft(cluster: dict) -> str | None:
         response.raise_for_status()
         data = response.json()
     except (requests.RequestException, ValueError) as exc:
-        log_ollama_unavailable(f"draft generation failed: {exc}")
+        log_ollama_unavailable(f"мақала жобасын генерациялау сәтсіз: {exc}")
         _ollama_available_cache = False
         return None
 
@@ -62,7 +62,7 @@ def ollama_available() -> bool:
         response.raise_for_status()
         response.json()
     except (requests.RequestException, ValueError) as exc:
-        log_ollama_unavailable(f"preflight failed: {exc}")
+        log_ollama_unavailable(f"алдын ала тексеру сәтсіз: {exc}")
         _ollama_available_cache = False
         return False
     _ollama_available_cache = True
@@ -73,7 +73,7 @@ def log_ollama_unavailable(message: str) -> None:
     global _ollama_unavailable_logged
     if _ollama_unavailable_logged:
         return
-    print(f"[ollama] unavailable; using fallback templates ({message})")
+    print(f"[ollama] қолжетімсіз; резерв шаблондар қолданылады ({message})")
     _ollama_unavailable_logged = True
 
 
@@ -81,7 +81,7 @@ def ollama_timeout() -> int:
     try:
         return int(os.getenv("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
     except ValueError as exc:
-        print(f"[ollama] invalid OLLAMA_TIMEOUT; using {DEFAULT_OLLAMA_TIMEOUT}: {exc}")
+        print(f"[ollama] OLLAMA_TIMEOUT қате; {DEFAULT_OLLAMA_TIMEOUT} қолданылады: {exc}")
         return DEFAULT_OLLAMA_TIMEOUT
 
 
@@ -94,29 +94,29 @@ def build_prompt(cluster: dict) -> str:
     sources = ", ".join(cluster.get("sources", [])[:5])
     tags = ", ".join(cluster.get("tags", []))
 
-    return f"""Ты пишешь черновик аналитической статьи на русском языке.
+    return f"""Сен қазақ тілінде аналитикалық мақала жобасын жазасың.
 
-Используй только данные event cluster ниже:
+Тек төмендегі event cluster деректерін қолдан:
 
-Title: {cluster.get("title", "")}
-Summary: {cluster.get("summary", "")}
-Tags: {tags}
-Sources: {sources}
-Links:
+Тақырып: {cluster.get("title", "")}
+Түйін: {cluster.get("summary", "")}
+Тегтер: {tags}
+Дереккөздер: {sources}
+Сілтемелер:
 {chr(10).join(links)}
 
-Правила:
-- Не выдумывай факты, имена, цифры, цитаты или детали.
-- Не копируй текст источников дословно.
-- Не загружай и не пересказывай полный текст статей.
-- Если информации мало, используй осторожные формулировки.
-- Пиши своими словами.
-- В конце обязательно добавь источники со ссылками из списка выше.
-- Не оставляй слово "Тақырып" как заголовок: после # напиши короткий заголовок статьи.
+Ережелер:
+- Факт, есім, сан, цитата немесе деталь ойдан шығарма.
+- Дереккөз мәтінін сөзбе-сөз көшірме.
+- Мақалалардың толық мәтінін жүктеме және қайталап берме.
+- Ақпарат аз болса, сақ тұжырым қолдан.
+- Өз сөзіңмен жаз.
+- Соңында жоғарыдағы тізімнен дереккөздерді сілтемелерімен міндетті түрде қос.
+- "Тақырып" сөзін сол күйі қалдырма: # белгісінен кейін қысқа нақты тақырып жаз.
 
-Структура:
+Құрылым:
 
-# [короткий заголовок]
+# [қысқа тақырып]
 
 Лид
 

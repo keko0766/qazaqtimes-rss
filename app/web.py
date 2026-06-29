@@ -86,7 +86,7 @@ class JobState:
                 self.append(line.rstrip())
             returncode = process.wait()
         except Exception as exc:  # noqa: BLE001 - GUI must never crash the app process.
-            self.append(f"[gui] failed to run command: {exc}")
+            self.append(f"[gui] команданы іске қосу сәтсіз: {exc}")
             returncode = 1
 
         with self.lock:
@@ -101,7 +101,7 @@ class JobState:
                 return False
             process = self.process
             self.stop_requested = True
-            self.output.append("[gui] stop requested")
+            self.output.append("[gui] тоқтату сұралды")
 
         process.terminate()
         threading.Timer(5, self._kill_if_running, args=(process,)).start()
@@ -109,7 +109,7 @@ class JobState:
 
     def _kill_if_running(self, process: subprocess.Popen[str]) -> None:
         if process.poll() is None:
-            self.append("[gui] process did not stop in time; killing it")
+            self.append("[gui] процесс уақытында тоқтамады; мәжбүрлеп тоқтатылады")
             process.kill()
 
     def append(self, line: str) -> None:
@@ -144,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/stop":
             if not JOB.stop():
-                self.send_json({"ok": False, "error": "No running job"}, status=409)
+                self.send_json({"ok": False, "error": "Іске қосылған тапсырма жоқ"}, status=409)
                 return
             self.send_json({"ok": True})
             return
@@ -158,10 +158,10 @@ class Handler(BaseHTTPRequestHandler):
         mode = str(payload.get("mode", "fast"))
         use_ollama = bool(payload.get("use_ollama", False))
         if command not in COMMANDS or mode not in MODES:
-            self.send_json({"ok": False, "error": "Invalid command or mode"}, status=400)
+            self.send_json({"ok": False, "error": "Команда немесе режим қате"}, status=400)
             return
         if not JOB.start(command, mode, use_ollama):
-            self.send_json({"ok": False, "error": "A job is already running"}, status=409)
+            self.send_json({"ok": False, "error": "Тапсырма қазір орындалып жатыр"}, status=409)
             return
         self.send_json({"ok": True})
 
@@ -212,7 +212,7 @@ def now_iso() -> str:
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="ru">
+<html lang="kk">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -337,45 +337,45 @@ INDEX_HTML = r"""<!doctype html>
 <body>
   <header>
     <h1>geo-news-bot</h1>
-    <span id="latest" class="muted">digest: -</span>
+    <span id="latest" class="muted">дайджест: -</span>
   </header>
   <main>
     <aside>
       <div class="field">
-        <label for="command">Command</label>
+        <label for="command">Команда</label>
         <select id="command">
-          <option value="all">all</option>
-          <option value="collect">collect</option>
-          <option value="report">report</option>
+          <option value="all">бәрі</option>
+          <option value="collect">жинау</option>
+          <option value="report">есеп</option>
         </select>
       </div>
       <div class="field">
-        <label for="mode">Mode</label>
+        <label for="mode">Режим</label>
         <select id="mode">
-          <option value="fast">fast</option>
-          <option value="normal">normal</option>
+          <option value="fast">жылдам</option>
+          <option value="normal">қалыпты</option>
         </select>
       </div>
       <label class="toggle">
         <input id="ollama" type="checkbox">
-        USE_OLLAMA=true
+        Ollama қолдану
       </label>
       <div class="row">
-        <button id="run">Run</button>
-        <button id="stop" class="danger" disabled>Stop</button>
-        <button id="refresh" class="ghost">Refresh</button>
+        <button id="run">Іске қосу</button>
+        <button id="stop" class="danger" disabled>Тоқтату</button>
+        <button id="refresh" class="ghost">Жаңарту</button>
       </div>
       <div class="status">
-        <strong id="state">Idle</strong>
-        <div id="meta" class="muted">No job running</div>
+        <strong id="state">Дайын</strong>
+        <div id="meta" class="muted">Тапсырма орындалып жатқан жоқ</div>
       </div>
     </aside>
     <section>
       <div class="tabs">
-        <button id="tabDigest" class="active">Digest</button>
-        <button id="tabLog">Log</button>
+        <button id="tabDigest" class="active">Дайджест</button>
+        <button id="tabLog">Журнал</button>
       </div>
-      <pre id="viewer">Loading...</pre>
+      <pre id="viewer">Жүктеліп жатыр...</pre>
     </section>
   </main>
   <script>
@@ -390,10 +390,13 @@ INDEX_HTML = r"""<!doctype html>
     const tabLog = document.querySelector("#tabLog");
     let activeTab = "digest";
 
+    const commandLabels = {all: "бәрі", collect: "жинау", report: "есеп"};
+    const modeLabels = {fast: "жылдам", normal: "қалыпты"};
+
     async function getJSON(url, options) {
       const response = await fetch(url, options);
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Request failed");
+      if (!response.ok) throw new Error(data.error || "Сұрау сәтсіз аяқталды");
       return data;
     }
 
@@ -402,22 +405,22 @@ INDEX_HTML = r"""<!doctype html>
       run.disabled = status.running;
       stop.disabled = !status.running;
       state.textContent = status.running
-        ? "Running"
-        : status.returncode === 0 ? "Done" : status.stopped ? "Stopped" : status.finished_at ? "Error" : "Idle";
+        ? "Орындалып жатыр"
+        : status.returncode === 0 ? "Аяқталды" : status.stopped ? "Тоқтатылды" : status.finished_at ? "Қате" : "Дайын";
       meta.textContent = status.running
-        ? `${status.command} --mode ${status.mode} started ${status.started_at}`
-        : status.finished_at ? `finished ${status.finished_at}, exit ${status.returncode}` : "No job running";
-      latest.textContent = `digest: ${status.latest_digest || "-"}`;
+        ? `${commandLabels[status.command] || status.command}, режим: ${modeLabels[status.mode] || status.mode}; басталды: ${status.started_at}`
+        : status.finished_at ? `аяқталды: ${status.finished_at}, шығу коды ${status.returncode}` : "Тапсырма орындалып жатқан жоқ";
+      latest.textContent = `дайджест: ${status.latest_digest || "-"}`;
       if (activeTab === "log") {
-        viewer.textContent = status.output.join("\n") || "No logs yet.";
+        viewer.textContent = status.output.join("\n") || "Журнал әзірге жоқ.";
       }
       return status;
     }
 
     async function refreshDigest() {
       const digest = await getJSON("/api/digest");
-      latest.textContent = `digest: ${digest.name || "-"}`;
-      viewer.textContent = digest.content || "No digest yet.";
+      latest.textContent = `дайджест: ${digest.name || "-"}`;
+      viewer.textContent = digest.content || "Дайджест әзірге жоқ.";
     }
 
     async function refreshAll() {
