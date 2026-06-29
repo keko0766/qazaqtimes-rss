@@ -24,12 +24,30 @@ docker compose run --rm app python app/main.py all --mode fast
 ```bash
 docker compose run --rm app python app/main.py collect
 docker compose run --rm app python app/main.py report
+docker compose run --rm app python app/main.py article --mode fast
 docker compose run --rm app python app/main.py all
 ```
 
 - `collect`: RSS/GDELT жинайды, дубль жазбаларды алып тастайды, классификация жасап, жазбаларды сақтайды.
 - `report`: сақталған жазбалардан Markdown дайджест құрастырады.
+- `article`: ең жоғары бағаланған оқиға кластерінен қысқа қазақша мақала жасап, `output/articles/` ішіне сақтайды.
 - `all`: екі қадамды қатар орындайды.
+
+## Қазақша мақала жасау
+
+CLI арқылы:
+
+```bash
+docker compose run --rm app python app/main.py article --mode fast
+```
+
+GUI арқылы:
+
+```text
+http://localhost:8000 -> Қазақша мақала жазу
+```
+
+Ollama қосылса, мақала Ollama арқылы жазылады. Ollama жоқ болса, бот қысқа қазақша резерв шаблон жасап, бәрібір `.md` файл сақтайды.
 
 ## Режимдер
 
@@ -49,7 +67,7 @@ docker compose run --rm app python app/main.py all --mode normal
 docker compose --profile gui up gui
 ```
 
-Браузерден `http://localhost:8000` ашыңыз. GUI арқылы `collect`, `report` немесе `all` іске қосуға, `fast`/`normal` таңдауға, журналды көруге, соңғы дайджесті оқуға және жүріп тұрған тапсырманы тоқтатуға болады. GUI Ollama-ны өзі іске қоспайды; ол үшін Ollama профилі бөлек қолданылады.
+Браузерден `http://localhost:8000` ашыңыз. GUI арқылы `collect`, `report` немесе `all` іске қосуға, қысқа қазақша мақала жазуға, `fast`/`normal` таңдауға, журналды көруге, соңғы дайджесті оқуға және жүріп тұрған тапсырманы тоқтатуға болады. GUI Ollama-ны өзі іске қоспайды; ол үшін Ollama профилі бөлек қолданылады.
 
 ## Дереккөздер
 

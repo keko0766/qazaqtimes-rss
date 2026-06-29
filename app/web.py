@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
-COMMANDS = {"collect", "report", "all"}
+COMMANDS = {"collect", "report", "article", "all"}
 MODES = {"fast", "normal"}
 
 
@@ -41,6 +41,7 @@ class JobState:
                 "stopped": self.stop_requested and self.returncode not in (None, 0),
                 "output": self.output[-200:],
                 "latest_digest": str(latest_digest_path().name) if latest_digest_path() else "",
+                "latest_article": latest_article_label(),
             }
 
     def start(self, command: str, mode: str, use_ollama: bool) -> bool:
@@ -207,6 +208,21 @@ def latest_digest_path() -> Path | None:
     return digests[0] if digests else None
 
 
+def latest_article_path() -> Path | None:
+    article_dir = OUTPUT_DIR / "articles"
+    if not article_dir.exists():
+        return None
+    articles = sorted(article_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return articles[0] if articles else None
+
+
+def latest_article_label() -> str:
+    article = latest_article_path()
+    if not article:
+        return ""
+    return str(article.relative_to(PROJECT_ROOT))
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -283,6 +299,7 @@ INDEX_HTML = r"""<!doctype html>
     button.ghost { background: #fff; color: var(--ink); border-color: var(--line); }
     button:disabled { opacity: .55; cursor: wait; }
     .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .article-button { margin-top: 8px; background: var(--accent-2); border-color: var(--accent-2); }
     .toggle {
       display: flex;
       align-items: center;
@@ -365,9 +382,11 @@ INDEX_HTML = r"""<!doctype html>
         <button id="stop" class="danger" disabled>Тоқтату</button>
         <button id="refresh" class="ghost">Жаңарту</button>
       </div>
+      <button id="article" class="article-button">Қазақша мақала жазу</button>
       <div class="status">
         <strong id="state">Дайын</strong>
         <div id="meta" class="muted">Тапсырма орындалып жатқан жоқ</div>
+        <div id="articlePath" class="muted">мақала: -</div>
       </div>
     </aside>
     <section>
@@ -386,11 +405,13 @@ INDEX_HTML = r"""<!doctype html>
     const run = document.querySelector("#run");
     const stop = document.querySelector("#stop");
     const refresh = document.querySelector("#refresh");
+    const article = document.querySelector("#article");
+    const articlePath = document.querySelector("#articlePath");
     const tabDigest = document.querySelector("#tabDigest");
     const tabLog = document.querySelector("#tabLog");
     let activeTab = "digest";
 
-    const commandLabels = {all: "бәрі", collect: "жинау", report: "есеп"};
+    const commandLabels = {all: "бәрі", collect: "жинау", report: "есеп", article: "мақала"};
     const modeLabels = {fast: "жылдам", normal: "қалыпты"};
 
     async function getJSON(url, options) {
@@ -403,6 +424,7 @@ INDEX_HTML = r"""<!doctype html>
     async function refreshStatus() {
       const status = await getJSON("/api/status");
       run.disabled = status.running;
+      article.disabled = status.running;
       stop.disabled = !status.running;
       state.textContent = status.running
         ? "Орындалып жатыр"
@@ -411,6 +433,7 @@ INDEX_HTML = r"""<!doctype html>
         ? `${commandLabels[status.command] || status.command}, режим: ${modeLabels[status.mode] || status.mode}; басталды: ${status.started_at}`
         : status.finished_at ? `аяқталды: ${status.finished_at}, шығу коды ${status.returncode}` : "Тапсырма орындалып жатқан жоқ";
       latest.textContent = `дайджест: ${status.latest_digest || "-"}`;
+      articlePath.textContent = `мақала: ${status.latest_article || "-"}`;
       if (activeTab === "log") {
         viewer.textContent = status.output.join("\n") || "Журнал әзірге жоқ.";
       }
@@ -439,6 +462,25 @@ INDEX_HTML = r"""<!doctype html>
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
             command: document.querySelector("#command").value,
+            mode: document.querySelector("#mode").value,
+            use_ollama: document.querySelector("#ollama").checked
+          })
+        });
+        activeTab = "log";
+        tabLog.classList.add("active");
+        tabDigest.classList.remove("active");
+        await refreshAll();
+      } catch (error) {
+        viewer.textContent = error.message;
+      }
+    });
+    article.addEventListener("click", async () => {
+      try {
+        await getJSON("/api/run", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            command: "article",
             mode: document.querySelector("#mode").value,
             use_ollama: document.querySelector("#ollama").checked
           })

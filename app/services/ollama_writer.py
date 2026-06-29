@@ -18,11 +18,15 @@ def use_ollama() -> bool:
 
 
 def generate_draft(cluster: dict) -> str | None:
+    prompt = build_prompt(cluster)
+    return generate_text(prompt, "мақала жобасын генерациялау")
+
+
+def generate_text(prompt: str, task_name: str = "мәтін генерациялау") -> str | None:
     global _ollama_available_cache
     if not ollama_available():
         return None
 
-    prompt = build_prompt(cluster)
     payload = {
         "model": os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
         "prompt": prompt,
@@ -40,7 +44,7 @@ def generate_draft(cluster: dict) -> str | None:
         response.raise_for_status()
         data = response.json()
     except (requests.RequestException, ValueError) as exc:
-        log_ollama_unavailable(f"мақала жобасын генерациялау сәтсіз: {exc}")
+        log_ollama_unavailable(f"{task_name} сәтсіз: {exc}")
         _ollama_available_cache = False
         return None
 

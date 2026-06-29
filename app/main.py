@@ -23,6 +23,8 @@ from app.collectors.rss_collector import collect_rss_sources
 from app.db import fetch_recent_news, get_connection, get_existing_titles, init_db, insert_news
 from app.services.classifier import classify_items
 from app.services.deduplicate import deduplicate_items
+from app.services.article_writer import generate_kazakh_article, save_article
+from app.services.event_clusterer import cluster_events
 from app.services.relevance import filter_relevant_items
 from app.services.report_generator import generate_report
 from app.utils.datetime import get_app_timezone, now_local
@@ -37,7 +39,7 @@ RUN_MODES = {
 def main() -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description="Геосаяси жаңалықтарды жинап, Markdown дайджест жасайды.")
-    parser.add_argument("command", choices=["collect", "report", "all"], help="Іске қосылатын команда")
+    parser.add_argument("command", choices=["collect", "report", "article", "all"], help="Іске қосылатын команда")
     parser.add_argument(
         "--mode",
         choices=RUN_MODES.keys(),
@@ -55,6 +57,8 @@ def main() -> int:
         collect(settings)
     if args.command in {"report", "all"}:
         report(settings)
+    if args.command == "article":
+        article(settings)
     return 0
 
 
@@ -155,6 +159,27 @@ def report(settings: dict) -> None:
     classified_items = classify_items(items)
     relevant_items = filter_relevant_items(classified_items)
     generate_report(relevant_items, settings["output_dir"])
+
+
+def article(settings: dict) -> None:
+    print("[main] қазақша мақала жасалып жатыр")
+    init_db(settings["db_path"])
+    with get_connection(settings["db_path"]) as conn:
+        items = fetch_recent_news(conn)
+    classified_items = classify_items(items)
+    relevant_items = filter_relevant_items(classified_items)
+    clusters = cluster_events(relevant_items)
+    if not clusters:
+        print("[article] мақалаға лайық оқиға кластері табылмады")
+        return
+
+    cluster = clusters[0]
+    content = generate_kazakh_article(cluster)
+    if not content:
+        print("[article] мақала мәтіні жасалмады")
+        return
+    path = save_article(cluster["title"], content)
+    print(f"[article] сақталды: {path}")
 
 
 if __name__ == "__main__":
