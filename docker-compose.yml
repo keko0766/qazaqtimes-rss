@@ -1,4 +1,29 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: geo-news-ollama
+    profiles:
+      - ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
+    command: sh -c "sleep 10 && ollama pull $$OLLAMA_MODEL"
+    volumes:
+      - ollama_data:/root/.ollama
+    profiles:
+      - ollama
+      - setup
+
   app:
     build: .
     container_name: geo-news-bot
@@ -6,11 +31,34 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
       TZ: ${APP_TIMEZONE:-Asia/Almaty}
       USE_OLLAMA: ${USE_OLLAMA:-false}
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
-      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
     volumes:
       - ./data:/app/data
       - ./output:/app/output
       - ./sources.json:/app/sources.json:ro
     command: python app/main.py all
+
+  gui:
+    build: .
+    container_name: geo-news-gui
+    profiles:
+      - gui
+    ports:
+      - "8000:8000"
+    environment:
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
+      TZ: ${APP_TIMEZONE:-Asia/Almaty}
+      USE_OLLAMA: ${USE_OLLAMA:-false}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./sources.json:/app/sources.json:ro
+    command: python app/web.py
+
+volumes:
+  ollama_data:

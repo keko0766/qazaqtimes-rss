@@ -1,12 +1,6 @@
 {
   "rss_sources": [
     {
-      "name": "U.S. Department of State",
-      "url": "https://www.state.gov/rss-feed/",
-      "enabled": false,
-      "note": "Official pages currently return HTML instead of a clean RSS feed. Add a verified RSS URL when available."
-    },
-    {
       "name": "The White House News",
       "url": "https://www.whitehouse.gov/news/feed/"
     },
@@ -15,54 +9,12 @@
       "url": "https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945&max=50"
     },
     {
-      "name": "NATO News",
-      "url": "https://www.nato.int/cps/en/natohq/news.xml",
-      "enabled": false,
-      "note": "Official RSS URL was not stable during testing. Add a verified NATO RSS URL when available."
-    },
-    {
       "name": "UN News",
       "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml"
     },
     {
-      "name": "IAEA Press Releases",
-      "url": "https://www.iaea.org/feeds/press-releases/rss.xml",
-      "enabled": false,
-      "note": "Official site may block automated RSS checks or has changed feed paths."
-    },
-    {
-      "name": "President of Ukraine",
-      "url": "https://www.president.gov.ua/en/rss",
-      "enabled": false,
-      "note": "Official site may block automated RSS checks. Add a verified RSS URL when available."
-    },
-    {
-      "name": "Ukraine MFA",
-      "url": "https://mfa.gov.ua/en/rss",
-      "enabled": false,
-      "note": "Official site currently does not expose a stable RSS feed at this URL."
-    },
-    {
       "name": "Kremlin",
       "url": "http://en.kremlin.ru/events/president/news/feed"
-    },
-    {
-      "name": "Russia MFA",
-      "url": "https://mid.ru/en/foreign_policy/news/rss/",
-      "enabled": false,
-      "note": "Official URL redirects to a non-RSS page during testing."
-    },
-    {
-      "name": "European Council",
-      "url": "https://www.consilium.europa.eu/en/rss/press-releases/",
-      "enabled": false,
-      "note": "Official site may block automated RSS checks or has changed feed paths."
-    },
-    {
-      "name": "China MFA",
-      "url": "",
-      "enabled": false,
-      "note": "No stable official English RSS feed found. Add manually when available."
     },
     {
       "name": "BBC World",

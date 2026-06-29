@@ -5,9 +5,12 @@ import os
 import requests
 
 
-DEFAULT_OLLAMA_URL = "http://host.docker.internal:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
-DEFAULT_OLLAMA_TIMEOUT = 120
+DEFAULT_OLLAMA_URL = "http://ollama:11434"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
+DEFAULT_OLLAMA_TIMEOUT = 180
+
+_ollama_unavailable_logged = False
+_ollama_available_cache: bool | None = None
 
 
 def use_ollama() -> bool:
@@ -15,6 +18,10 @@ def use_ollama() -> bool:
 
 
 def generate_draft(cluster: dict) -> str | None:
+    global _ollama_available_cache
+    if not ollama_available():
+        return None
+
     prompt = build_prompt(cluster)
     payload = {
         "model": os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
@@ -22,7 +29,7 @@ def generate_draft(cluster: dict) -> str | None:
         "stream": False,
     }
     base_url = os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
-    timeout = int(os.getenv("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
+    timeout = ollama_timeout()
 
     try:
         response = requests.post(
@@ -33,11 +40,49 @@ def generate_draft(cluster: dict) -> str | None:
         response.raise_for_status()
         data = response.json()
     except (requests.RequestException, ValueError) as exc:
-        print(f"[ollama] draft generation failed: {exc}")
+        log_ollama_unavailable(f"draft generation failed: {exc}")
+        _ollama_available_cache = False
         return None
 
     text = str(data.get("response", "")).strip()
     return text or None
+
+
+def ollama_available() -> bool:
+    global _ollama_available_cache
+    if _ollama_available_cache is not None:
+        return _ollama_available_cache
+
+    base_url = os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
+    try:
+        response = requests.get(
+            f"{base_url}/api/tags",
+            timeout=min(ollama_timeout(), 10),
+        )
+        response.raise_for_status()
+        response.json()
+    except (requests.RequestException, ValueError) as exc:
+        log_ollama_unavailable(f"preflight failed: {exc}")
+        _ollama_available_cache = False
+        return False
+    _ollama_available_cache = True
+    return True
+
+
+def log_ollama_unavailable(message: str) -> None:
+    global _ollama_unavailable_logged
+    if _ollama_unavailable_logged:
+        return
+    print(f"[ollama] unavailable; using fallback templates ({message})")
+    _ollama_unavailable_logged = True
+
+
+def ollama_timeout() -> int:
+    try:
+        return int(os.getenv("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
+    except ValueError as exc:
+        print(f"[ollama] invalid OLLAMA_TIMEOUT; using {DEFAULT_OLLAMA_TIMEOUT}: {exc}")
+        return DEFAULT_OLLAMA_TIMEOUT
 
 
 def build_prompt(cluster: dict) -> str:
@@ -67,10 +112,11 @@ Links:
 - Если информации мало, используй осторожные формулировки.
 - Пиши своими словами.
 - В конце обязательно добавь источники со ссылками из списка выше.
+- Не оставляй слово "Тақырып" как заголовок: после # напиши короткий заголовок статьи.
 
 Структура:
 
-# Тақырып
+# [короткий заголовок]
 
 Лид
 

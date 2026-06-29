@@ -6,7 +6,6 @@ from pathlib import Path
 from app.services.event_clusterer import cluster_events
 from app.services.ollama_writer import generate_draft, use_ollama
 from app.services.topic_score import (
-    GEOPOLITICAL_TAGS,
     is_china_taiwan,
     is_usa_iran,
     is_weak_gdelt_summary,
@@ -31,8 +30,7 @@ def generate_report(items: list[dict], output_dir: str | Path) -> Path:
 
     clusters = cluster_events(items)
     top_clusters = select_top_clusters(clusters)
-    topic_clusters = [cluster for cluster in clusters if cluster.get("core_topic_score", 0) >= 2]
-    secondary_clusters = select_secondary_clusters(clusters, top_clusters)
+    topic_clusters = select_topic_clusters(clusters)
 
     lines: list[str] = [
         f"# Geopolitical Digest — {today}",
@@ -53,10 +51,6 @@ def generate_report(items: list[dict], output_dir: str | Path) -> Path:
         "",
         *build_draft_articles(top_clusters),
         "",
-        "## Второстепенные международные новости",
-        "",
-        *build_secondary_news(secondary_clusters),
-        "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
     print(f"[report] created {path}")
@@ -64,32 +58,42 @@ def generate_report(items: list[dict], output_dir: str | Path) -> Path:
 
 
 def select_top_clusters(clusters: list[dict]) -> list[dict]:
-    top = []
-    for cluster in clusters:
-        tags = set(cluster.get("tags") or [])
-        core_score = int(cluster.get("core_topic_score", 0))
-        if core_score >= 2 and int(cluster.get("final_score", 0)) >= 35:
-            top.append(cluster)
-            continue
-        if cluster.get("max_source_score", 0) >= 8 and tags & GEOPOLITICAL_TAGS and core_score >= 2:
-            top.append(cluster)
-    return top[:12]
+    return [
+        cluster
+        for cluster in clusters
+        if int(cluster.get("final_score", 0)) >= 25
+        and is_report_topic(cluster)
+    ][:12]
 
 
-def select_secondary_clusters(clusters: list[dict], top_clusters: list[dict]) -> list[dict]:
-    top_ids = {id(cluster) for cluster in top_clusters}
-    secondary = []
-    for cluster in clusters:
-        if id(cluster) in top_ids:
-            continue
-        if int(cluster.get("core_topic_score", 0)) == 1:
-            secondary.append(cluster)
-    return secondary[:12]
+def select_topic_clusters(clusters: list[dict]) -> list[dict]:
+    return [
+        cluster
+        for cluster in clusters
+        if int(cluster.get("final_score", 0)) >= 20
+        and is_report_topic(cluster)
+    ][:20]
+
+
+def is_report_topic(cluster: dict) -> bool:
+    tags = set(cluster.get("tags") or [])
+    text = cluster_text(cluster)
+    if {"russia", "ukraine"} <= tags:
+        return True
+    if is_usa_iran(tags):
+        return True
+    if is_china_taiwan(tags, text):
+        return True
+    if tags & {"nato", "eu"}:
+        return True
+    if tags & TOPIC_RULES["Middle East"]:
+        return True
+    return "sanctions" in tags and bool(tags & {"usa", "iran", "russia", "ukraine", "china", "nato", "eu"})
 
 
 def build_headlines(clusters: list[dict]) -> list[str]:
     if not clusters:
-        return ["- Нет сильных core-событий для дайджеста."]
+        return ["- Нет сильных событий для дайджеста."]
 
     lines = []
     for cluster in clusters[:8]:
@@ -134,7 +138,7 @@ def group_clusters_by_topic(clusters: list[dict]) -> dict[str, list[dict]]:
     for cluster in clusters:
         tags = set(cluster.get("tags") or [])
         text = cluster_text(cluster)
-        if tags & {"russia", "ukraine"}:
+        if {"russia", "ukraine"} <= tags:
             grouped["Russia / Ukraine"].append(cluster)
         if is_usa_iran(tags):
             grouped["USA / Iran"].append(cluster)
@@ -157,8 +161,6 @@ def render_event_block(cluster: dict, heading_level: int = 3) -> list[str]:
         "",
         f"Tags: {format_tags(cluster)}",
         "",
-        f"Core topics: {format_core_topics(cluster)}",
-        "",
         "Sources:",
         *[f"- {source}" for source in cluster["sources"][:5]],
         "",
@@ -172,7 +174,6 @@ def build_draft_articles(clusters: list[dict]) -> list[str]:
         cluster
         for cluster in clusters
         if cluster["final_score"] >= 40
-        and cluster.get("core_topic_score", 0) >= 2
         and (cluster["source_count"] >= 2 or cluster["max_source_score"] >= 10)
         and has_draft_ready_summary(cluster)
     ][:3]
@@ -181,16 +182,16 @@ def build_draft_articles(clusters: list[dict]) -> list[str]:
 
     lines: list[str] = []
     ollama_enabled = use_ollama()
-    print(f"[report] draft writer: {'ollama' if ollama_enabled else 'fallback'}")
+    print(f"[report] draft writer configured: {'ollama' if ollama_enabled else 'fallback'}")
     for cluster in candidates:
         if ollama_enabled:
             ollama_text = generate_draft(cluster)
             if ollama_text:
-                print(f"[report] draft writer: ollama used for '{cluster['title']}'")
+                print(f"[report] draft writer mode=ollama title='{cluster['title']}'")
                 lines.extend(ollama_text.splitlines())
                 lines.append("")
                 continue
-            print(f"[report] draft writer: fallback used for '{cluster['title']}'")
+        print(f"[report] draft writer mode=fallback title='{cluster['title']}'")
         lines.extend(render_article(cluster))
         lines.append("")
     return lines
@@ -234,19 +235,18 @@ def render_article(cluster: dict) -> list[str]:
 
 
 def article_profile(cluster: dict) -> str:
-    topics = set(cluster.get("core_topics") or [])
     tags = set(cluster.get("tags") or [])
-    if "russia_ukraine" in topics:
+    if {"russia", "ukraine"} <= tags:
         return "russia_ukraine"
-    if {"usa_iran", "iran_nuclear"} & topics:
+    if is_usa_iran(tags):
         return "usa_iran"
-    if "china_taiwan" in topics:
+    if is_china_taiwan(tags, cluster_text(cluster)):
         return "china_taiwan"
-    if {"nato_ukraine"} & topics or tags & {"nato", "eu"}:
+    if tags & {"nato", "eu"}:
         return "nato_eu"
-    if "sanctions" in topics:
+    if "sanctions" in tags:
         return "sanctions"
-    if "middle_east_security" in topics or tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
+    if tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
         return "middle_east"
     return "general"
 
@@ -316,30 +316,19 @@ def next_steps_text(profile: str) -> str:
     return "Следующий шаг — сверить официальные заявления и реакцию ключевых участников."
 
 
-def build_secondary_news(clusters: list[dict]) -> list[str]:
-    if not clusters:
-        return ["- Нет второстепенных международных новостей после фильтрации."]
-    lines = []
-    for cluster in clusters:
-        sources = ", ".join(cluster["sources"][:3])
-        lines.append(f"- **{cluster['title']}** — {short_summary(cluster)} Sources: {sources}.")
-    return lines
-
-
 def human_topic(cluster: dict) -> str:
-    topics = set(cluster.get("core_topics") or [])
     tags = set(cluster.get("tags") or [])
-    if "russia_ukraine" in topics:
+    if {"russia", "ukraine"} <= tags:
         return "Россия/Украина"
-    if "china_taiwan" in topics:
+    if is_china_taiwan(tags, cluster_text(cluster)):
         return "Китай/Тайвань"
-    if {"usa_iran", "iran_nuclear"} & topics:
+    if is_usa_iran(tags):
         return "США/Иран"
-    if "nato_ukraine" in topics or tags & {"nato", "eu"}:
+    if tags & {"nato", "eu"}:
         return "НАТО/ЕС"
-    if "middle_east_security" in topics or tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
+    if tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
         return "Ближний Восток"
-    if "sanctions" in topics:
+    if "sanctions" in tags:
         return "Санкции"
     return "Геополитика"
 
@@ -356,11 +345,6 @@ def short_summary(cluster: dict) -> str:
 def format_tags(cluster: dict) -> str:
     tags = [tag for tag in cluster.get("tags", []) if tag != "untagged"]
     return ", ".join(tags) if tags else "none"
-
-
-def format_core_topics(cluster: dict) -> str:
-    topics = cluster.get("core_topics") or []
-    return ", ".join(topics) if topics else "secondary"
 
 
 def format_links(cluster: dict, limit: int = 3) -> str:

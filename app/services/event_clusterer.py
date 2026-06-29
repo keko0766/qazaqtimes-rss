@@ -164,8 +164,6 @@ def finalize_cluster(cluster: dict) -> dict:
     source_count = len(sources)
     max_score = max(int(item.get("final_score", 0)) for item in items)
     max_source_score = max(int(item.get("source_score", 0)) for item in items)
-    core_topic_score = max(int(item.get("core_topic_score", 0)) for item in items)
-    core_topics = sorted({topic for item in items for topic in item.get("core_topics", [])})
 
     return {
         "title": lead.get("title", "Untitled event"),
@@ -176,8 +174,6 @@ def finalize_cluster(cluster: dict) -> dict:
         "items": items,
         "source_count": source_count,
         "max_source_score": max_source_score,
-        "core_topic_score": core_topic_score,
-        "core_topics": core_topics,
         "final_score": max_score + source_count * 2 + min(len(items), 5),
     }
 

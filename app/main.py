@@ -31,7 +31,6 @@ from app.utils.datetime import get_app_timezone, now_local
 RUN_MODES = {
     "fast": {"gdelt_enabled": False, "maxrecords": 0, "delay_seconds": 0},
     "normal": {"gdelt_enabled": True, "maxrecords": 20, "delay_seconds": 15},
-    "deep": {"gdelt_enabled": True, "maxrecords": 50, "delay_seconds": 30},
 }
 
 
@@ -42,8 +41,8 @@ def main() -> int:
     parser.add_argument(
         "--mode",
         choices=RUN_MODES.keys(),
-        default="normal",
-        help="Run mode: fast = RSS only, normal = RSS + GDELT 20/15, deep = RSS + GDELT 50/30",
+        default="fast",
+        help="Run mode: fast = RSS only, normal = RSS + GDELT",
     )
     args = parser.parse_args()
 
@@ -141,9 +140,7 @@ def apply_run_mode(gdelt_config: dict, mode: str) -> dict:
     config = dict(gdelt_config)
     mode_config = RUN_MODES[mode]
     config["enabled"] = bool(config.get("enabled", True)) and mode_config["gdelt_enabled"]
-    config["maxrecords"] = mode_config["maxrecords"] or int(
-        config.get("maxrecords", DEFAULT_MAX_RECORDS)
-    )
+    config["maxrecords"] = mode_config["maxrecords"] or DEFAULT_MAX_RECORDS
     config["delay_seconds"] = mode_config["delay_seconds"]
     config.setdefault("retry_delay_seconds", DEFAULT_RETRY_DELAY_SECONDS)
     config.setdefault("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)

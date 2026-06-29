@@ -5,7 +5,6 @@ import re
 from app.utils.text import normalize_spaces
 from app.services.relevance import IMPORTANT_TAGS, is_relevant_item
 from app.services.source_quality import source_score_for_item
-from app.services.topic_score import score_item_core_topic
 
 
 TAG_KEYWORDS = {
@@ -62,7 +61,6 @@ def classify_item(item: dict) -> dict:
     item["source_score"] = source_score_for_item(item)
     item["relevance_score"] = find_relevance_score(item)
     item["final_score"] = find_final_score(item)
-    item = score_item_core_topic(item)
     return item
 
 

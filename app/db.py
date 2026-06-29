@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS news (
     source_score INTEGER DEFAULT 0,
     relevance_score INTEGER DEFAULT 0,
     final_score INTEGER DEFAULT 0,
-    core_topic_score INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     processed INTEGER DEFAULT 0
 );
@@ -29,7 +28,6 @@ MIGRATIONS = {
     "source_score": "ALTER TABLE news ADD COLUMN source_score INTEGER DEFAULT 0",
     "relevance_score": "ALTER TABLE news ADD COLUMN relevance_score INTEGER DEFAULT 0",
     "final_score": "ALTER TABLE news ADD COLUMN final_score INTEGER DEFAULT 0",
-    "core_topic_score": "ALTER TABLE news ADD COLUMN core_topic_score INTEGER DEFAULT 0",
 }
 
 
@@ -71,9 +69,9 @@ def insert_news(conn: sqlite3.Connection, items: Iterable[dict]) -> int:
     inserted = 0
     sql = """
     INSERT OR IGNORE INTO news
-        (title, url, source, published_at, summary, tags, importance, source_score, relevance_score, final_score, core_topic_score)
+        (title, url, source, published_at, summary, tags, importance, source_score, relevance_score, final_score)
     VALUES
-        (:title, :url, :source, :published_at, :summary, :tags, :importance, :source_score, :relevance_score, :final_score, :core_topic_score)
+        (:title, :url, :source, :published_at, :summary, :tags, :importance, :source_score, :relevance_score, :final_score)
     """
     for item in items:
         tags = item.get("tags", [])
@@ -88,7 +86,6 @@ def insert_news(conn: sqlite3.Connection, items: Iterable[dict]) -> int:
             "source_score": int(item.get("source_score", 0)),
             "relevance_score": int(item.get("relevance_score", 0)),
             "final_score": int(item.get("final_score", 0)),
-            "core_topic_score": int(item.get("core_topic_score", 0)),
         }
         if not row["title"] or not row["url"]:
             continue
@@ -104,7 +101,7 @@ def fetch_recent_news(conn: sqlite3.Connection, limit: int = 500) -> list[dict]:
         """
         SELECT
             id, title, url, source, published_at, summary, tags, importance,
-            source_score, relevance_score, final_score, core_topic_score, created_at
+            source_score, relevance_score, final_score, created_at
         FROM news
         ORDER BY final_score DESC, importance DESC, COALESCE(published_at, created_at) DESC, id DESC
         LIMIT ?
