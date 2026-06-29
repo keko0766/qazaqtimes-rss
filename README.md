@@ -1,129 +1,130 @@
 # geo-news-bot
 
-Геосаяси дайджест жасауға арналған жеңіл Docker MVP:
+Жергілікті браузер GUI арқылы геосаяси жаңалық жинап, дайджест және қазақша Markdown мақалалар жасайтын жеңіл app.
 
-RSS/GDELT -> SQLite -> дубльдерді алып тастау -> классификация/сүзгі -> оқиға кластері -> Markdown дайджест -> қосымша Ollama жазушысы -> резерв шаблон.
+Жоба мақалалардың толық мәтінін интернеттен жүктемейді және автожариялау жасамайды. Тек сақталған metadata, summary және links қолданылады.
 
-Жоба тек метадеректерді сақтайды: `title`, `url`, `source`, `published_at`, `summary`, `tags` және қарапайым бағалау өрістері. Мақалалардың толық мәтіні жүктелмейді, автожариялау жоқ.
+## Қарапайым іске қосу
 
-## Жылдам бастау
+### Mac
 
-Әдепкі режим тек `app` сервисін іске қосады және Ollama image жүктемейді:
+1. `start.command` файлын екі рет басыңыз.
+2. Браузер автоматты ашылады.
+3. **Бүгінгі 5 мақаланы жасау** батырмасын басыңыз.
+
+Егер macOS рұқсат сұраса:
 
 ```bash
-docker compose run --rm app python app/main.py all --mode fast
+chmod +x start.command
 ```
 
-Іске қосылғаннан кейін:
+### Terminal
 
-- SQLite: `data/news.sqlite3`
-- Дайджест: `output/digest_YYYY-MM-DD.md`
+```bash
+chmod +x start.sh
+./start.sh
+```
 
-## Командалар
+Скрипт Docker барын, Docker Desktop қосулы екенін тексереді, `.env` жоқ болса `.env.example` ішінен жасайды, GUI контейнерін іске қосады және браузер ашады.
+
+## GUI
+
+Браузер адресі:
+
+```text
+http://localhost:8000
+```
+
+Негізгі батырма:
+
+- **Бүгінгі 5 мақаланы жасау**: жаңалық жинайды, digest жасайды, 5 қазақша мақала шығарады.
+
+Қосымша батырмалар:
+
+- **Тек жаңалық жинау**
+- **Дайджест жасау**
+- **Мақала жасау**
+- **Тоқтату**
+- **Папканы ашу**
+
+Кеңейтілген баптаулар:
+
+- `fast`: тек RSS, жылдам режим.
+- `normal`: RSS + GDELT.
+- мақала саны: 1-10.
+- ИИ provider: өшірулі, LM Studio, Ollama.
+
+Нәтиже:
+
+```text
+output/articles/YYYY-MM-DD/latest/
+output/digest_YYYY-MM-DD.md
+data/news.sqlite3
+```
+
+GUI ішінде **Бүгінгі мақалалар** блогы тек `latest/` папкасындағы соңғы daily run нәтижесін көрсетеді. Әр карточкада **Көшіру** және **Толық көру** батырмалары бар.
+
+## LM Studio
+
+LM Studio қолдану үшін:
+
+1. LM Studio ашыңыз.
+2. Developer / Local Server бөлімінде серверді іске қосыңыз.
+3. Port: `1234`.
+4. GUI ішінде ИИ provider ретінде `LM Studio` таңдаңыз.
+
+Әдепкі URL:
+
+```text
+http://host.docker.internal:1234/v1
+```
+
+Хосттан тексеру:
+
+```bash
+curl http://localhost:1234/v1/models
+```
+
+Егер LM Studio табылмаса, app құламайды: резерв шаблонмен мақала сақтайды және GUI-де қысқа ескерту көрсетеді.
+
+## Ollama
+
+Ollama default-та қосылмайды және image download жасамайды. Ол тек бөлек profile арқылы керек кезде іске қосылады:
+
+```bash
+docker compose --profile ollama up -d ollama
+docker compose --profile ollama --profile setup run --rm ollama-pull
+```
+
+GUI ішінде ИИ provider ретінде `Ollama` таңдауға болады. Егер Ollama profile қосылмаған болса, app fallback қолданады.
+
+## Әзірлеушілер үшін
+
+CLI командалар сақталған:
 
 ```bash
 docker compose run --rm app python app/main.py collect
 docker compose run --rm app python app/main.py report
-docker compose run --rm app python app/main.py article --mode fast
-docker compose run --rm app python app/main.py all
-```
-
-- `collect`: RSS/GDELT жинайды, дубль жазбаларды алып тастайды, классификация жасап, жазбаларды сақтайды.
-- `report`: сақталған жазбалардан Markdown дайджест құрастырады.
-- `article`: ең жоғары бағаланған оқиға кластерінен қысқа қазақша мақала жасап, `output/articles/` ішіне сақтайды.
-- `all`: екі қадамды қатар орындайды.
-
-## Қазақша мақала жасау
-
-CLI арқылы:
-
-```bash
-docker compose run --rm app python app/main.py article --mode fast
-```
-
-GUI арқылы:
-
-```text
-http://localhost:8000 -> Қазақша мақала жазу
-```
-
-Ollama қосылса, мақала Ollama арқылы жазылады. Ollama жоқ болса, бот қысқа қазақша резерв шаблон жасап, бәрібір `.md` файл сақтайды.
-
-## Режимдер
-
-```bash
+docker compose run --rm app python app/main.py article --mode fast --limit 5 --replace-today
 docker compose run --rm app python app/main.py all --mode fast
-docker compose run --rm app python app/main.py all --mode normal
 ```
 
-- `fast`: тек RSS, әдепкі режим.
-- `normal`: RSS + GDELT.
-
-## GUI
-
-Шағын жергілікті GUI қосымша профиль арқылы іске қосылады:
+LM Studio арқылы CLI:
 
 ```bash
-docker compose --profile gui up gui
+docker compose run --rm \
+  -e AI_PROVIDER=lmstudio \
+  -e LMSTUDIO_MODEL=openai/gpt-oss-20b \
+  app python app/main.py article --mode fast --limit 5 --replace-today
 ```
 
-Браузерден `http://localhost:8000` ашыңыз. GUI арқылы `collect`, `report` немесе `all` іске қосуға, қысқа қазақша мақала жазуға, `fast`/`normal` таңдауға, журналды көруге, соңғы дайджесті оқуға және жүріп тұрған тапсырманы тоқтатуға болады. GUI Ollama-ны өзі іске қоспайды; ол үшін Ollama профилі бөлек қолданылады.
-
-## Дереккөздер
-
-Белсенді RSS дереккөздері `sources.json` ішінде: White House, Defense.gov, UN News, Kremlin, BBC World, Al Jazeera, The Guardian World, Deutsche Welle, France 24 және GDELT баптауы.
-
-Өшірілген кандидаттар `sources.disabled.json` ішіне шығарылған, сондықтан негізгі тізім қысқа болып қалады.
-
-## Қосымша Ollama
-
-Ollama әдепкі бойынша өшірулі:
-
-```env
-USE_OLLAMA=false
-OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:3b
-OLLAMA_TIMEOUT=180
-```
-
-Ollama контейнерін іске қосу:
+Тексеру:
 
 ```bash
-docker compose --profile ollama up -d ollama
+python3 -m compileall app
+docker compose config
+docker compose --profile gui up -d --build gui
+curl http://localhost:8000/api/status
 ```
 
-Модель жүктеу:
-
-```bash
-docker compose --profile ollama --profile setup run --rm ollama-pull
-```
-
-Ollama арқылы есеп жасау:
-
-```bash
-docker compose --profile ollama run --rm -e USE_OLLAMA=true app python app/main.py report --mode fast
-```
-
-Ollama қолжетімсіз болса, қосымша бір ескерту шығарып, резерв шаблондарды қолданады. Модель Docker volume `ollama_data` ішінде сақталады; алғашқы жүктеу үлкен болуы мүмкін, әсіресе Mac-та.
-
-`docker-compose.gpu.yml` тек болашақ NVIDIA бар ПК үшін қалдырылған. NVIDIA driver және NVIDIA Container Toolkit керек:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ollama up -d ollama
-```
-
-## GDELT 429
-
-Егер GDELT `429 Too Many Requests` қайтарса, жинаушы `retry_delay_seconds` күтіп, бір рет қайталайды. Қайтадан 429 болса, сол сұрау өткізіледі. RSS жинау және есеп жасау жалғаса береді.
-
-Не істеуге болады:
-
-- кейінірек іске қосу;
-- `gdelt.queries` санын азайту;
-- `gdelt.maxrecords` азайту;
-- `gdelt.delay_seconds` ұлғайту;
-- `--mode fast` қолдану.
-
-## Қолмен тексеру
-
-Мақала жобасы дайын жарияланым емес. Жариялау алдында `output/digest_YYYY-MM-DD.md` файлын ашып, сілтемелерді, даталарды, есімдерді, сандарды және тұжырымдарды тексеріңіз. Өз талдауыңызды тек факт қолмен тексерілгеннен кейін қосыңыз.
+GDELT `429 Too Many Requests` қайтарса, `fast` режимін қолданыңыз немесе кейінірек қайталап көріңіз.

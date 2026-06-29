@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import platform
+import re
 import subprocess
 import sys
 import threading
@@ -11,9 +13,16 @@ from urllib.parse import urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.utils.datetime import today_str
+
 OUTPUT_DIR = PROJECT_ROOT / "output"
 COMMANDS = {"collect", "report", "article", "all"}
+PRESETS = {"daily_articles"}
 MODES = {"fast", "normal"}
+AI_PROVIDERS = {"none", "ollama", "lmstudio"}
 
 
 class JobState:
@@ -21,91 +30,176 @@ class JobState:
         self.lock = threading.Lock()
         self.running = False
         self.command = ""
-        self.mode = ""
+        self.preset = ""
+        self.mode = "fast"
+        self.limit = 5
+        self.ai_provider = "none"
         self.started_at = ""
         self.finished_at = ""
         self.returncode: int | None = None
         self.output: list[str] = []
         self.process: subprocess.Popen[str] | None = None
         self.stop_requested = False
+        self.user_message = ""
 
     def snapshot(self) -> dict:
         with self.lock:
             return {
                 "running": self.running,
                 "command": self.command,
+                "preset": self.preset,
                 "mode": self.mode,
+                "limit": self.limit,
+                "ai_provider": self.ai_provider,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
                 "returncode": self.returncode,
                 "stopped": self.stop_requested and self.returncode not in (None, 0),
-                "output": self.output[-200:],
-                "latest_digest": str(latest_digest_path().name) if latest_digest_path() else "",
-                "latest_article": latest_article_label(),
+                "status_label": self.status_label(),
+                "message": self.status_message(),
+                "output": self.output[-240:],
+                "today_folder": today_article_folder_label(),
+                "latest_digest": latest_digest(include_content=False),
+                "latest_articles": today_articles(limit=5),
+                "lmstudio_fallback": self.has_lmstudio_fallback(),
             }
 
-    def start(self, command: str, mode: str, use_ollama: bool) -> bool:
+    def status_label(self) -> str:
+        if self.running:
+            return "Жұмыс істеп жатыр"
+        if self.stop_requested and self.returncode not in (None, 0):
+            return "Тоқтатылды"
+        if self.returncode == 0:
+            return "Аяқталды"
+        if self.finished_at:
+            return "Қате болды"
+        return "Дайын"
+
+    def status_message(self) -> str:
+        if self.user_message:
+            return self.user_message
+        if self.running:
+            return "Жаңалықтар өңделіп жатыр. Журналдан барысын көре аласыз."
+        if self.returncode == 0:
+            return build_run_summary(self.output) or "Дайын. Соңғы нәтижелер төменде көрсетіледі."
+        if self.stop_requested and self.returncode not in (None, 0):
+            return "Жұмыс тоқтатылды."
+        if self.finished_at:
+            return "Қате болды. Толық ақпарат журналда."
+        return "Бір батырмамен бүгінгі мақалаларды жасаңыз."
+
+    def has_lmstudio_fallback(self) -> bool:
+        return any("LM Studio қолжетімсіз" in line for line in self.output)
+
+    def start_command(self, command: str, mode: str, ai_provider: str, limit: int = 5) -> bool:
+        if command not in COMMANDS:
+            return False
+        steps = [build_command(command, mode, limit, replace_today=(command == "article"))]
+        label = command
+        return self.start(label, "", steps, mode, ai_provider, limit)
+
+    def start_preset(self, preset: str, mode: str, ai_provider: str, limit: int = 5) -> bool:
+        if preset not in PRESETS:
+            return False
+        if preset == "daily_articles":
+            steps = [
+                build_command("all", mode, limit),
+                build_command("article", mode, limit, replace_today=True),
+            ]
+            return self.start("daily_articles", preset, steps, mode, ai_provider, limit)
+        return False
+
+    def start(
+        self,
+        command: str,
+        preset: str,
+        steps: list[list[str]],
+        mode: str,
+        ai_provider: str,
+        limit: int,
+    ) -> bool:
         with self.lock:
             if self.running:
                 return False
             self.running = True
             self.command = command
+            self.preset = preset
             self.mode = mode
+            self.limit = limit
+            self.ai_provider = ai_provider
             self.started_at = now_iso()
             self.finished_at = ""
             self.returncode = None
             self.output = []
             self.process = None
             self.stop_requested = False
+            self.user_message = ""
+
         thread = threading.Thread(
-            target=self._run,
-            args=(command, mode, use_ollama),
+            target=self._run_steps,
+            args=(steps, ai_provider),
             daemon=True,
         )
         thread.start()
         return True
 
-    def _run(self, command: str, mode: str, use_ollama: bool) -> None:
-        cmd = [sys.executable, "app/main.py", command, "--mode", mode]
-        env = None
-        if use_ollama:
-            env = {"USE_OLLAMA": "true"}
+    def _run_steps(self, steps: list[list[str]], ai_provider: str) -> None:
+        env = {**dict_env(), **ai_environment(ai_provider)}
+        final_returncode = 0
+
         try:
-            process = subprocess.Popen(
-                cmd,
-                cwd=PROJECT_ROOT,
-                env=None if env is None else {**dict_env(), **env},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            with self.lock:
-                self.process = process
-            assert process.stdout is not None
-            for line in process.stdout:
-                self.append(line.rstrip())
-            returncode = process.wait()
-        except Exception as exc:  # noqa: BLE001 - GUI must never crash the app process.
+            for index, cmd in enumerate(steps, start=1):
+                with self.lock:
+                    if self.stop_requested:
+                        final_returncode = 130
+                        break
+                self.append(f"[gui] қадам {index}/{len(steps)}: {' '.join(cmd)}")
+                returncode = self._run_process(cmd, env)
+                final_returncode = returncode
+                if returncode != 0:
+                    break
+        except Exception as exc:  # noqa: BLE001 - GUI must never crash the server.
             self.append(f"[gui] команданы іске қосу сәтсіз: {exc}")
-            returncode = 1
+            final_returncode = 1
 
         with self.lock:
             self.running = False
-            self.returncode = returncode
+            self.returncode = final_returncode
             self.finished_at = now_iso()
             self.process = None
+            summary = build_run_summary(self.output)
+            if self.has_lmstudio_fallback():
+                summary = f"{summary}\nLM Studio табылмады, резерв шаблон қолданылды." if summary else "LM Studio табылмады, резерв шаблон қолданылды."
+            self.user_message = summary
+
+    def _run_process(self, cmd: list[str], env: dict[str, str]) -> int:
+        process = subprocess.Popen(
+            cmd,
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        with self.lock:
+            self.process = process
+        assert process.stdout is not None
+        for line in process.stdout:
+            self.append(line.rstrip())
+        return process.wait()
 
     def stop(self) -> bool:
         with self.lock:
-            if not self.running or self.process is None:
+            if not self.running:
                 return False
-            process = self.process
             self.stop_requested = True
+            process = self.process
             self.output.append("[gui] тоқтату сұралды")
 
-        process.terminate()
-        threading.Timer(5, self._kill_if_running, args=(process,)).start()
+        if process is not None and process.poll() is None:
+            process.terminate()
+            threading.Timer(5, self._kill_if_running, args=(process,)).start()
         return True
 
     def _kill_if_running(self, process: subprocess.Popen[str]) -> None:
@@ -131,13 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(JOB.snapshot())
             return
         if path == "/api/digest":
-            digest = latest_digest_path()
-            self.send_json(
-                {
-                    "name": digest.name if digest else "",
-                    "content": digest.read_text(encoding="utf-8") if digest else "",
-                }
-            )
+            self.send_json(latest_digest(include_content=True))
             return
         self.send_error(404)
 
@@ -149,19 +237,41 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"ok": True})
             return
-
-        if path != "/api/run":
-            self.send_error(404)
+        if path == "/api/open-folder":
+            self.send_json(open_today_folder())
             return
+        if path == "/api/run-preset":
+            self.handle_run_preset()
+            return
+        if path == "/api/run":
+            self.handle_run()
+            return
+        self.send_error(404)
 
+    def handle_run_preset(self) -> None:
         payload = self.read_json()
-        command = str(payload.get("command", "all"))
-        mode = str(payload.get("mode", "fast"))
-        use_ollama = bool(payload.get("use_ollama", False))
-        if command not in COMMANDS or mode not in MODES:
-            self.send_json({"ok": False, "error": "Команда немесе режим қате"}, status=400)
+        preset = str(payload.get("preset", "daily_articles")).strip()
+        mode = parse_mode(payload.get("mode", "fast"))
+        limit = parse_limit(payload.get("limit", 5))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "none"), payload.get("use_ollama", False))
+        if preset not in PRESETS:
+            self.send_json({"ok": False, "error": "Preset қате"}, status=400)
             return
-        if not JOB.start(command, mode, use_ollama):
+        if not JOB.start_preset(preset, mode, ai_provider, limit=limit):
+            self.send_json({"ok": False, "error": "Тапсырма қазір орындалып жатыр"}, status=409)
+            return
+        self.send_json({"ok": True})
+
+    def handle_run(self) -> None:
+        payload = self.read_json()
+        command = str(payload.get("command", "all")).strip()
+        mode = parse_mode(payload.get("mode", "fast"))
+        limit = parse_limit(payload.get("limit", 5))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "none"), payload.get("use_ollama", False))
+        if command not in COMMANDS:
+            self.send_json({"ok": False, "error": "Команда қате"}, status=400)
+            return
+        if not JOB.start_command(command, mode, ai_provider, limit=limit):
             self.send_json({"ok": False, "error": "Тапсырма қазір орындалып жатыр"}, status=409)
             return
         self.send_json({"ok": True})
@@ -195,10 +305,59 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[gui] {self.address_string()} {format % args}")
 
 
+def build_command(command: str, mode: str, limit: int, replace_today: bool = False) -> list[str]:
+    cmd = [sys.executable, "app/main.py", command, "--mode", mode]
+    if command == "article":
+        cmd.extend(["--limit", str(limit)])
+        if replace_today:
+            cmd.append("--replace-today")
+    return cmd
+
+
 def dict_env() -> dict[str, str]:
     import os
 
     return dict(os.environ)
+
+
+def ai_environment(provider: str) -> dict[str, str]:
+    if provider == "ollama":
+        return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
+    if provider == "lmstudio":
+        return {
+            "AI_PROVIDER": "lmstudio",
+            "USE_OLLAMA": "false",
+            "LMSTUDIO_URL": "http://host.docker.internal:1234/v1",
+        }
+    return {"AI_PROVIDER": "none", "USE_OLLAMA": "false"}
+
+
+def parse_mode(value: object) -> str:
+    mode = str(value or "fast").strip().lower()
+    return mode if mode in MODES else "fast"
+
+
+def parse_ai_provider(value: object, use_ollama: object = False) -> str:
+    provider = str(value or "").strip().lower()
+    if provider in AI_PROVIDERS:
+        return provider
+    return "ollama" if bool(use_ollama) else "none"
+
+
+def parse_limit(value: object) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 5
+    return min(max(limit, 1), 10)
+
+
+def today_article_folder() -> Path:
+    return OUTPUT_DIR / "articles" / today_str() / "latest"
+
+
+def today_article_folder_label() -> str:
+    return str(today_article_folder().relative_to(PROJECT_ROOT))
 
 
 def latest_digest_path() -> Path | None:
@@ -208,19 +367,105 @@ def latest_digest_path() -> Path | None:
     return digests[0] if digests else None
 
 
-def latest_article_path() -> Path | None:
-    article_dir = OUTPUT_DIR / "articles"
-    if not article_dir.exists():
-        return None
-    articles = sorted(article_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
-    return articles[0] if articles else None
+def latest_digest(include_content: bool = False) -> dict:
+    digest = latest_digest_path()
+    if not digest:
+        return {"path": "", "preview": ""}
+    text = digest.read_text(encoding="utf-8", errors="replace")
+    payload = {
+        "path": str(digest.relative_to(PROJECT_ROOT)),
+        "preview": text[:800],
+    }
+    if include_content:
+        payload["content"] = text
+    return payload
 
 
-def latest_article_label() -> str:
-    article = latest_article_path()
-    if not article:
+def today_articles(limit: int = 5) -> list[dict]:
+    folder = today_article_folder()
+    if not folder.exists():
+        return []
+    articles = sorted(folder.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+    return [article_payload(path) for path in articles]
+
+
+def article_payload(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    body = strip_front_matter(text)
+    return {
+        "path": str(path.relative_to(PROJECT_ROOT)),
+        "title": article_title(text, body),
+        "preview": " ".join(line.strip() for line in body.splitlines() if line.strip())[:400],
+    }
+
+
+def strip_front_matter(text: str) -> str:
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            return parts[2].strip()
+    return text.strip()
+
+
+def article_title(raw: str, body: str) -> str:
+    for line in raw.splitlines():
+        if line.startswith("title:"):
+            return line.split(":", 1)[1].strip().strip('"')
+    for line in body.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return "Мақала"
+
+
+def open_today_folder() -> dict:
+    folder = today_article_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+    opener = "open" if platform.system() == "Darwin" else "xdg-open"
+    try:
+        subprocess.Popen([opener, str(folder)], cwd=PROJECT_ROOT)
+    except OSError:
+        return {
+            "ok": False,
+            "path": str(folder.relative_to(PROJECT_ROOT)),
+            "error": "Папканы автоматты ашу мүмкін болмады. Жолды қолмен ашыңыз.",
+        }
+    return {"ok": True, "path": str(folder.relative_to(PROJECT_ROOT))}
+
+
+def build_run_summary(output: list[str]) -> str:
+    metrics = {
+        "rss": find_last_number(output, r"жиналған RSS жазбалар: (\d+)"),
+        "unique": find_last_number(output, r"бірегей кандидаттар: (\d+)"),
+        "new": find_last_number(output, r"жаңа жазбалар: (\d+)"),
+        "selected": find_last_number(output, r"мақалаға таңдалған оқиғалар: (\d+)"),
+        "saved": find_last_number(output, r"сақталған мақалалар: (\d+)"),
+    }
+    if not any(value is not None for value in metrics.values()):
         return ""
-    return str(article.relative_to(PROJECT_ROOT))
+
+    lines = []
+    if metrics["rss"] is not None:
+        lines.append(f"Жиналған RSS жазбалар: {metrics['rss']}")
+    if metrics["unique"] is not None:
+        lines.append(f"Бірегей жаңалықтар: {metrics['unique']}")
+    if metrics["new"] is not None:
+        lines.append(f"Жаңа жазбалар: {metrics['new']}")
+    if metrics["selected"] is not None:
+        lines.append(f"Мақалаға таңдалған оқиғалар: {metrics['selected']}")
+    if metrics["saved"] is not None:
+        lines.append(f"Сақталған мақалалар: {metrics['saved']}")
+    if metrics["new"] == 0:
+        lines.append("Жаңа жазба табылмады, мақалалар бұрын сақталған соңғы релевант оқиғалардан жасалды.")
+    return "\n".join(lines)
+
+
+def find_last_number(lines: list[str], pattern: str) -> int | None:
+    compiled = re.compile(pattern)
+    for line in reversed(lines):
+        match = compiled.search(line)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def now_iso() -> str:
@@ -244,6 +489,7 @@ INDEX_HTML = r"""<!doctype html>
       --accent: #126b5f;
       --accent-2: #284b8f;
       --danger: #a43f3f;
+      --soft: #eef6f4;
     }
     * { box-sizing: border-box; }
     body {
@@ -267,7 +513,7 @@ INDEX_HTML = r"""<!doctype html>
     h1 { margin: 0; font-size: 18px; letter-spacing: 0; }
     main {
       display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
       min-height: calc(100vh - 58px);
     }
     aside {
@@ -276,9 +522,18 @@ INDEX_HTML = r"""<!doctype html>
       padding: 16px;
     }
     section { padding: 16px; min-width: 0; }
-    .field { margin-bottom: 14px; }
+    h2 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0; }
+    .hero {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--soft);
+      margin-bottom: 14px;
+    }
+    .hero p { margin: 0 0 12px; color: var(--muted); }
+    .field { margin-bottom: 12px; }
     label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-    select, button {
+    select, input, button {
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--line);
@@ -294,32 +549,112 @@ INDEX_HTML = r"""<!doctype html>
       border-color: var(--accent);
       color: #fff;
     }
+    button.primary {
+      min-height: 52px;
+      font-size: 16px;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
     button.secondary { background: var(--accent-2); border-color: var(--accent-2); }
     button.danger { background: var(--danger); border-color: var(--danger); }
     button.ghost { background: #fff; color: var(--ink); border-color: var(--line); }
     button:disabled { opacity: .55; cursor: wait; }
-    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-    .article-button { margin-top: 8px; background: var(--accent-2); border-color: var(--accent-2); }
-    .toggle {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 36px;
-      color: var(--ink);
+    .actions { display: grid; gap: 8px; margin-top: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    details {
+      margin-top: 14px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
     }
-    .toggle input { width: 16px; height: 16px; }
+    summary { cursor: pointer; font-weight: 700; }
     .status {
-      margin-top: 16px;
+      margin-top: 14px;
       padding: 12px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: #fbfcfe;
     }
     .status strong { display: block; margin-bottom: 4px; }
+    #meta { white-space: pre-line; }
+    .hint {
+      display: none;
+      margin-top: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      background: #fff7e6;
+      color: #6b4a00;
+      font-size: 12px;
+    }
+    .notice {
+      display: none;
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 6px;
+      background: #fff7e6;
+      color: #6b4a00;
+    }
     .muted { color: var(--muted); }
+    .results-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 12px;
+      min-width: 0;
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .path {
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .preview {
+      margin: 0 0 10px;
+      color: #354052;
+      font-size: 13px;
+    }
+    .card-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .digest {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 12px;
+    }
+    .digest pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 180px;
+      overflow: auto;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     .tabs {
       display: flex;
       gap: 8px;
+      margin-top: 16px;
       margin-bottom: 12px;
     }
     .tabs button {
@@ -330,13 +665,13 @@ INDEX_HTML = r"""<!doctype html>
       border-color: var(--line);
     }
     .tabs button.active { border-color: var(--accent); color: var(--accent); }
-    pre {
+    #viewer {
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
       overflow: auto;
-      min-height: 520px;
-      max-height: calc(100vh - 130px);
+      min-height: 360px;
+      max-height: 520px;
       padding: 14px;
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -344,10 +679,10 @@ INDEX_HTML = r"""<!doctype html>
       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     .error { color: var(--danger); }
-    @media (max-width: 820px) {
+    @media (max-width: 860px) {
       main { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      pre { min-height: 360px; max-height: none; }
+      .results-head { align-items: stretch; flex-direction: column; }
     }
   </style>
 </head>
@@ -358,61 +693,88 @@ INDEX_HTML = r"""<!doctype html>
   </header>
   <main>
     <aside>
-      <div class="field">
-        <label for="command">Команда</label>
-        <select id="command">
-          <option value="all">бәрі</option>
-          <option value="collect">жинау</option>
-          <option value="report">есеп</option>
-        </select>
+      <div class="hero">
+        <h2>Бүгінгі мақалалар</h2>
+        <p>Жаңалықтарды жинап, дайджест жасап, 5 қазақша Markdown мақала дайындайды.</p>
+        <button id="daily" class="primary">Бүгінгі 5 мақаланы жасау</button>
       </div>
-      <div class="field">
-        <label for="mode">Режим</label>
-        <select id="mode">
-          <option value="fast">жылдам</option>
-          <option value="normal">қалыпты</option>
-        </select>
-      </div>
-      <label class="toggle">
-        <input id="ollama" type="checkbox">
-        Ollama қолдану
-      </label>
-      <div class="row">
-        <button id="run">Іске қосу</button>
+      <div class="actions">
+        <div class="grid-2">
+          <button id="collect" class="secondary">Тек жаңалық жинау</button>
+          <button id="report" class="secondary">Дайджест жасау</button>
+        </div>
+        <button id="article" class="secondary">Мақала жасау</button>
         <button id="stop" class="danger" disabled>Тоқтату</button>
-        <button id="refresh" class="ghost">Жаңарту</button>
       </div>
-      <button id="article" class="article-button">Қазақша мақала жазу</button>
+      <details>
+        <summary>Кеңейтілген баптаулар</summary>
+        <div class="field">
+          <label for="mode">Режим</label>
+          <select id="mode">
+            <option value="fast">fast</option>
+            <option value="normal">normal</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="limit">Мақала саны</label>
+          <input id="limit" type="number" min="1" max="10" value="5">
+        </div>
+        <div class="field">
+          <label for="aiProvider">ИИ provider</label>
+          <select id="aiProvider">
+            <option value="none">Өшірулі</option>
+            <option value="lmstudio">LM Studio</option>
+            <option value="ollama">Ollama</option>
+          </select>
+          <div id="lmHint" class="hint">LM Studio ашық және Local Server қосулы болуы керек. Әдепкі URL: http://host.docker.internal:1234/v1</div>
+        </div>
+      </details>
       <div class="status">
         <strong id="state">Дайын</strong>
-        <div id="meta" class="muted">Тапсырма орындалып жатқан жоқ</div>
-        <div id="articlePath" class="muted">мақала: -</div>
+        <div id="meta" class="muted">Бір батырмамен бүгінгі мақалаларды жасаңыз.</div>
+        <div id="lmNotice" class="notice">LM Studio табылмады, резерв шаблон қолданылды.</div>
       </div>
     </aside>
     <section>
-      <div class="tabs">
-        <button id="tabDigest" class="active">Дайджест</button>
-        <button id="tabLog">Журнал</button>
+      <div class="results-head">
+        <div>
+          <h2>Бүгінгі мақалалар</h2>
+          <div id="folder" class="muted">output/articles/YYYY-MM-DD/</div>
+        </div>
+        <button id="openFolder" class="ghost">Папканы ашу</button>
       </div>
-      <pre id="viewer">Жүктеліп жатыр...</pre>
+      <div id="articles" class="cards"></div>
+      <div class="digest">
+        <strong>Соңғы дайджест</strong>
+        <div id="digestPath" class="path">-</div>
+        <pre id="digestPreview">Дайджест әзірге жоқ.</pre>
+      </div>
+      <div class="tabs">
+        <button id="tabLog" class="active">Журнал</button>
+      </div>
+      <pre id="viewer">Журнал әзірге жоқ.</pre>
     </section>
   </main>
   <script>
-    const viewer = document.querySelector("#viewer");
-    const latest = document.querySelector("#latest");
     const state = document.querySelector("#state");
     const meta = document.querySelector("#meta");
-    const run = document.querySelector("#run");
-    const stop = document.querySelector("#stop");
-    const refresh = document.querySelector("#refresh");
+    const latest = document.querySelector("#latest");
+    const folder = document.querySelector("#folder");
+    const articles = document.querySelector("#articles");
+    const viewer = document.querySelector("#viewer");
+    const digestPath = document.querySelector("#digestPath");
+    const digestPreview = document.querySelector("#digestPreview");
+    const lmNotice = document.querySelector("#lmNotice");
+    const lmHint = document.querySelector("#lmHint");
+    const daily = document.querySelector("#daily");
+    const collect = document.querySelector("#collect");
+    const report = document.querySelector("#report");
     const article = document.querySelector("#article");
-    const articlePath = document.querySelector("#articlePath");
-    const tabDigest = document.querySelector("#tabDigest");
-    const tabLog = document.querySelector("#tabLog");
-    let activeTab = "digest";
-
-    const commandLabels = {all: "бәрі", collect: "жинау", report: "есеп", article: "мақала"};
-    const modeLabels = {fast: "жылдам", normal: "қалыпты"};
+    const stop = document.querySelector("#stop");
+    const openFolder = document.querySelector("#openFolder");
+    const mode = document.querySelector("#mode");
+    const limit = document.querySelector("#limit");
+    const aiProvider = document.querySelector("#aiProvider");
 
     async function getJSON(url, options) {
       const response = await fetch(url, options);
@@ -421,101 +783,121 @@ INDEX_HTML = r"""<!doctype html>
       return data;
     }
 
-    async function refreshStatus() {
-      const status = await getJSON("/api/status");
-      run.disabled = status.running;
-      article.disabled = status.running;
-      stop.disabled = !status.running;
-      state.textContent = status.running
-        ? "Орындалып жатыр"
-        : status.returncode === 0 ? "Аяқталды" : status.stopped ? "Тоқтатылды" : status.finished_at ? "Қате" : "Дайын";
-      meta.textContent = status.running
-        ? `${commandLabels[status.command] || status.command}, режим: ${modeLabels[status.mode] || status.mode}; басталды: ${status.started_at}`
-        : status.finished_at ? `аяқталды: ${status.finished_at}, шығу коды ${status.returncode}` : "Тапсырма орындалып жатқан жоқ";
-      latest.textContent = `дайджест: ${status.latest_digest || "-"}`;
-      articlePath.textContent = `мақала: ${status.latest_article || "-"}`;
-      if (activeTab === "log") {
-        viewer.textContent = status.output.join("\n") || "Журнал әзірге жоқ.";
-      }
-      return status;
+    function payload(extra) {
+      return JSON.stringify({
+        mode: mode.value,
+        limit: limit.value || 5,
+        ai_provider: aiProvider.value,
+        ...extra
+      });
     }
 
-    async function refreshDigest() {
-      const digest = await getJSON("/api/digest");
-      latest.textContent = `дайджест: ${digest.name || "-"}`;
-      viewer.textContent = digest.content || "Дайджест әзірге жоқ.";
+    async function runPreset() {
+      await getJSON("/api/run-preset", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: payload({preset: "daily_articles"})
+      });
+      await refreshAll();
+    }
+
+    async function runCommand(command) {
+      await getJSON("/api/run", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: payload({command})
+      });
+      await refreshAll();
+    }
+
+    async function refreshStatus() {
+      const status = await getJSON("/api/status");
+      state.textContent = status.status_label || "Дайын";
+      meta.textContent = status.message || "";
+      latest.textContent = `дайджест: ${(status.latest_digest && status.latest_digest.path) || "-"}`;
+      folder.textContent = status.today_folder || "output/articles/YYYY-MM-DD/";
+      stop.disabled = !status.running;
+      [daily, collect, report, article].forEach((button) => button.disabled = status.running);
+      viewer.textContent = (status.output || []).join("\n") || "Журнал әзірге жоқ.";
+      lmNotice.style.display = status.lmstudio_fallback ? "block" : "none";
+      renderArticles(status.latest_articles || []);
+      renderDigest(status.latest_digest || {});
+      return status;
     }
 
     async function refreshAll() {
       try {
-        const status = await refreshStatus();
-        if (activeTab === "digest" && !status.running) await refreshDigest();
+        await refreshStatus();
       } catch (error) {
-        viewer.innerHTML = `<span class="error">${error.message}</span>`;
+        meta.textContent = error.message;
+        state.textContent = "Қате болды";
       }
     }
 
-    run.addEventListener("click", async () => {
-      try {
-        await getJSON("/api/run", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            command: document.querySelector("#command").value,
-            mode: document.querySelector("#mode").value,
-            use_ollama: document.querySelector("#ollama").checked
-          })
-        });
-        activeTab = "log";
-        tabLog.classList.add("active");
-        tabDigest.classList.remove("active");
-        await refreshAll();
-      } catch (error) {
-        viewer.textContent = error.message;
+    function renderArticles(items) {
+      if (!items.length) {
+        articles.innerHTML = `<div class="card"><p class="muted">Әзірге мақала жоқ.</p></div>`;
+        return;
       }
-    });
-    article.addEventListener("click", async () => {
-      try {
-        await getJSON("/api/run", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            command: "article",
-            mode: document.querySelector("#mode").value,
-            use_ollama: document.querySelector("#ollama").checked
-          })
+      articles.innerHTML = items.map((item, index) => `
+        <article class="card">
+          <h3>${escapeHTML(item.title || "Мақала")}</h3>
+          <div class="path">${escapeHTML(item.path)}</div>
+          <p class="preview">${escapeHTML(item.preview || "")}</p>
+          <div class="card-actions">
+            <button class="ghost" data-copy="${index}">Көшіру</button>
+            <button class="ghost" data-view="${index}">Толық көру</button>
+          </div>
+        </article>
+      `).join("");
+      articles.querySelectorAll("[data-copy]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const item = items[Number(button.dataset.copy)];
+          await navigator.clipboard.writeText(`${item.title}\n${item.path}\n\n${item.preview}`);
+          button.textContent = "Көшірілді";
         });
-        activeTab = "log";
-        tabLog.classList.add("active");
-        tabDigest.classList.remove("active");
-        await refreshAll();
-      } catch (error) {
-        viewer.textContent = error.message;
-      }
-    });
+      });
+      articles.querySelectorAll("[data-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const item = items[Number(button.dataset.view)];
+          viewer.textContent = `${item.path}\n\n${item.preview}`;
+          window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"});
+        });
+      });
+    }
+
+    function renderDigest(digest) {
+      digestPath.textContent = digest.path || "-";
+      digestPreview.textContent = digest.preview || "Дайджест әзірге жоқ.";
+    }
+
+    function escapeHTML(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    daily.addEventListener("click", () => runPreset().catch((error) => meta.textContent = error.message));
+    collect.addEventListener("click", () => runCommand("collect").catch((error) => meta.textContent = error.message));
+    report.addEventListener("click", () => runCommand("report").catch((error) => meta.textContent = error.message));
+    article.addEventListener("click", () => runCommand("article").catch((error) => meta.textContent = error.message));
     stop.addEventListener("click", async () => {
       try {
         await getJSON("/api/stop", {method: "POST"});
-        activeTab = "log";
-        tabLog.classList.add("active");
-        tabDigest.classList.remove("active");
         await refreshAll();
       } catch (error) {
-        viewer.textContent = error.message;
+        meta.textContent = error.message;
       }
     });
-    refresh.addEventListener("click", refreshAll);
-    tabDigest.addEventListener("click", async () => {
-      activeTab = "digest";
-      tabDigest.classList.add("active");
-      tabLog.classList.remove("active");
-      await refreshDigest();
+    openFolder.addEventListener("click", async () => {
+      const result = await getJSON("/api/open-folder", {method: "POST"});
+      if (!result.ok) meta.textContent = `${result.error} ${result.path}`;
     });
-    tabLog.addEventListener("click", async () => {
-      activeTab = "log";
-      tabLog.classList.add("active");
-      tabDigest.classList.remove("active");
-      await refreshStatus();
+    aiProvider.addEventListener("change", () => {
+      lmHint.style.display = aiProvider.value === "lmstudio" ? "block" : "none";
     });
     setInterval(refreshAll, 2500);
     refreshAll();

@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from app.services.ai_writer import generate_article_text
 from app.services.event_clusterer import cluster_events
-from app.services.ollama_writer import generate_draft, use_ollama
+from app.services.ollama_writer import build_prompt as build_draft_prompt
 from app.services.topic_score import (
     is_china_taiwan,
     is_usa_iran,
@@ -181,17 +182,14 @@ def build_draft_articles(clusters: list[dict]) -> list[str]:
         return ["Мақала жобасына жеткілікті күшті оқиға кластері жоқ."]
 
     lines: list[str] = []
-    ollama_enabled = use_ollama()
-    print(f"[report] мақала жазу режимі: {'ollama' if ollama_enabled else 'резерв'}")
     for cluster in candidates:
-        if ollama_enabled:
-            ollama_text = generate_draft(cluster)
-            if ollama_text:
-                print(f"[report] мақала жазу режимі=ollama тақырып='{cluster['title']}'")
-                lines.extend(ollama_text.splitlines())
-                lines.append("")
-                continue
-        print(f"[report] мақала жазу режимі=резерв тақырып='{cluster['title']}'")
+        ai_text, mode = generate_article_text(build_draft_prompt(cluster))
+        if ai_text:
+            print(f"[report] мақала жазу режимі={mode} тақырып='{cluster['title']}'")
+            lines.extend(ai_text.splitlines())
+            lines.append("")
+            continue
+        print(f"[report] мақала жазу режимі=fallback тақырып='{cluster['title']}'")
         lines.extend(render_article(cluster))
         lines.append("")
     return lines

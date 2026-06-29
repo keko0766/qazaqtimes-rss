@@ -23,7 +23,12 @@ from app.collectors.rss_collector import collect_rss_sources
 from app.db import fetch_recent_news, get_connection, get_existing_titles, init_db, insert_news
 from app.services.classifier import classify_items
 from app.services.deduplicate import deduplicate_items
-from app.services.article_writer import generate_kazakh_article, save_article
+from app.services.article_writer import (
+    generate_kazakh_article,
+    prepare_article_output,
+    save_article,
+    select_article_clusters,
+)
 from app.services.event_clusterer import cluster_events
 from app.services.relevance import filter_relevant_items
 from app.services.report_generator import generate_report
@@ -46,6 +51,17 @@ def main() -> int:
         default="fast",
         help="Режим: fast = тек RSS, normal = RSS + GDELT",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="article командасы жасайтын мақала саны",
+    )
+    parser.add_argument(
+        "--replace-today",
+        action="store_true",
+        help="article нәтижесін output/articles/YYYY-MM-DD/latest ішіне таза қайта жазу",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
@@ -58,7 +74,7 @@ def main() -> int:
     if args.command in {"report", "all"}:
         report(settings)
     if args.command == "article":
-        article(settings)
+        article(settings, limit=max(args.limit, 1), replace_today=args.replace_today)
     return 0
 
 
@@ -106,6 +122,7 @@ def collect(settings: dict) -> None:
         timeout=settings["timeout"],
         max_items=settings["max_rss_items"],
     )
+    print(f"[main] жиналған RSS жазбалар: {len(rss_items)}")
 
     gdelt_items = []
     if gdelt_config.get("enabled", True):
@@ -161,25 +178,39 @@ def report(settings: dict) -> None:
     generate_report(relevant_items, settings["output_dir"])
 
 
-def article(settings: dict) -> None:
-    print("[main] қазақша мақала жасалып жатыр")
+def article(settings: dict, limit: int = 5, replace_today: bool = False) -> None:
+    print(f"[main] қазақша мақалалар жасалып жатыр (limit={limit})")
     init_db(settings["db_path"])
+    prepare_article_output(replace_today=replace_today)
     with get_connection(settings["db_path"]) as conn:
         items = fetch_recent_news(conn)
     classified_items = classify_items(items)
     relevant_items = filter_relevant_items(classified_items)
     clusters = cluster_events(relevant_items)
-    if not clusters:
+    selected_clusters = select_article_clusters(clusters, limit=limit)
+    print(f"[article] мақалаға таңдалған оқиғалар: {len(selected_clusters)}")
+    if not selected_clusters:
         print("[article] мақалаға лайық оқиға кластері табылмады")
         return
 
-    cluster = clusters[0]
-    content = generate_kazakh_article(cluster)
-    if not content:
-        print("[article] мақала мәтіні жасалмады")
-        return
-    path = save_article(cluster["title"], content)
-    print(f"[article] сақталды: {path}")
+    saved_paths = []
+    for index, cluster in enumerate(selected_clusters, start=1):
+        content, mode = generate_kazakh_article(cluster)
+        if not content:
+            print(f"[article] мақала мәтіні жасалмады: {cluster['title']}")
+            continue
+        path = save_article(
+            cluster["title"],
+            content,
+            index=index,
+            mode=mode,
+            source_count=int(cluster.get("source_count", 0)),
+            replace_today=replace_today,
+        )
+        saved_paths.append(path)
+        print(f"[article] сақталды: {path}")
+
+    print(f"[article] сақталған мақалалар: {len(saved_paths)}")
 
 
 if __name__ == "__main__":
