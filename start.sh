@@ -3,6 +3,86 @@ set -e
 
 cd "$(dirname "$0")"
 
+LOG_FILE="data/ollama_setup.log"
+STATUS_FILE="data/ollama_status.json"
+URL="http://localhost:8000"
+
+write_ollama_status() {
+  local state="$1"
+  local message="$2"
+  local error="${3:-}"
+  python3 - "$STATUS_FILE" "$state" "$message" "$error" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+payload = {
+    "state": sys.argv[2],
+    "message": sys.argv[3],
+    "error": sys.argv[4],
+    "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+}
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
+
+run_ollama_setup() {
+  mkdir -p data
+  write_ollama_status "starting" "Ollama контейнері іске қосылып жатыр"
+  {
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Ollama setup басталды"
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] docker compose --profile ollama up -d ollama"
+    docker compose --profile ollama up -d ollama &
+    local compose_pid=$!
+
+    local ready=""
+    for _ in $(seq 1 120); do
+      if docker ps --filter "name=^/geo-news-ollama$" --filter "status=running" --format "{{.Names}}" | grep -q "^geo-news-ollama$"; then
+        ready="true"
+        break
+      fi
+      if docker ps -a --filter "name=^/geo-news-ollama$" --filter "status=created" --format "{{.Names}}" | grep -q "^geo-news-ollama$"; then
+        docker start geo-news-ollama >/dev/null 2>&1 || true
+      fi
+      if ! kill -0 "$compose_pid" >/dev/null 2>&1 && ! docker ps -a --filter "name=^/geo-news-ollama$" --format "{{.Names}}" | grep -q "^geo-news-ollama$"; then
+        break
+      fi
+      sleep 2
+    done
+
+    kill "$compose_pid" >/dev/null 2>&1 || true
+    wait "$compose_pid" >/dev/null 2>&1 || true
+
+    if [ "$ready" != "true" ]; then
+      write_ollama_status "error" "Ollama іске қосылмады" "docker compose up failed"
+      echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: Ollama service start failed"
+      exit 0
+    fi
+
+    write_ollama_status "pulling" "Ollama моделі жүктеліп жатыр"
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] docker compose --profile ollama --profile setup run --rm ollama-pull"
+    if docker compose --profile ollama --profile setup run --rm ollama-pull; then
+      write_ollama_status "ready" "Ollama дайын"
+      echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Ollama setup дайын"
+    else
+      write_ollama_status "error" "Ollama моделі жүктелмеді" "ollama pull failed"
+      echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: Ollama model pull failed"
+    fi
+  } >> "$LOG_FILE" 2>&1
+}
+
+if [ "${1:-}" = "--ollama-setup" ]; then
+  run_ollama_setup
+  exit 0
+fi
+
+start_ollama_setup() {
+  nohup "$PWD/start.sh" --ollama-setup >/dev/null 2>&1 &
+}
+
 echo "geo-news-bot іске қосылуда..."
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -25,10 +105,14 @@ if [ ! -f .env ]; then
   fi
 fi
 
+mkdir -p data output
+
 echo "GUI контейнері дайындалып жатыр..."
 docker compose --profile gui up -d --build gui
 
-URL="http://localhost:8000"
+echo "Ollama background-та дайындалады..."
+start_ollama_setup
+
 echo "GUI дайын: $URL"
 
 if command -v open >/dev/null 2>&1; then
@@ -40,3 +124,4 @@ else
 fi
 
 echo "Браузерде \"Бүгінгі 5 мақаланы жасау\" батырмасын басыңыз."
+echo "Ollama setup журналы: $LOG_FILE"

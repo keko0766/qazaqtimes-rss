@@ -1,130 +1,80 @@
 # geo-news-bot
 
-Жергілікті браузер GUI арқылы геосаяси жаңалық жинап, дайджест және қазақша Markdown мақалалар жасайтын жеңіл app.
+Local GUI app: геосаяси жаңалықтарды жинайды, дайджест жасайды және 5 қысқа қазақша Markdown мақала дайындайды.
 
-Жоба мақалалардың толық мәтінін интернеттен жүктемейді және автожариялау жасамайды. Тек сақталған metadata, summary және links қолданылады.
+Жоба толық мақала мәтінін жүктемейді және автожариялау жасамайды. Тек сақталған metadata, summary және links қолданылады.
 
-## Қарапайым іске қосу
+## Қосу
 
-### Mac
+Mac-та:
 
-1. `start.command` файлын екі рет басыңыз.
-2. Браузер автоматты ашылады.
-3. **Бүгінгі 5 мақаланы жасау** батырмасын басыңыз.
+```text
+start.command
+```
+
+Файлды екі рет басыңыз. Скрипт Docker барын тексереді, `.env` жоқ болса жасайды, GUI ашады және Ollama-ны background-та дайындайды.
 
 Егер macOS рұқсат сұраса:
 
 ```bash
-chmod +x start.command
+chmod +x start.command start.sh
 ```
 
-### Terminal
-
-```bash
-chmod +x start.sh
-./start.sh
-```
-
-Скрипт Docker барын, Docker Desktop қосулы екенін тексереді, `.env` жоқ болса `.env.example` ішінен жасайды, GUI контейнерін іске қосады және браузер ашады.
-
-## GUI
-
-Браузер адресі:
+GUI ашылады:
 
 ```text
 http://localhost:8000
 ```
 
-Негізгі батырма:
+## Күнделікті жұмыс
 
-- **Бүгінгі 5 мақаланы жасау**: жаңалық жинайды, digest жасайды, 5 қазақша мақала шығарады.
+1. `start.command` басыңыз.
+2. Browser ашылған соң **Бүгінгі 5 мақаланы жасау** батырмасын басыңыз.
+3. Bot жаңалық жинайды, digest жасайды және 5 қазақша мақала сақтайды.
 
-Қосымша батырмалар:
+Default:
 
-- **Тек жаңалық жинау**
-- **Дайджест жасау**
-- **Мақала жасау**
-- **Тоқтату**
-- **Папканы ашу**
+- mode: `fast`
+- мақала саны: `5`
+- ИИ режимі: `Ollama`
 
-Кеңейтілген баптаулар:
+Ollama бірінші рет ұзақ жүктелуі мүмкін. Ол background-та дайындалады. Егер ИИ әлі дайын болмаса, app резерв шаблонмен мақала жасайды; дайын болған соң келесі генерацияда Ollama автоматты қолданылады.
 
-- `fast`: тек RSS, жылдам режим.
-- `normal`: RSS + GDELT.
-- мақала саны: 1-10.
-- ИИ provider: өшірулі, LM Studio, Ollama.
+## Тоқтату
 
-Нәтиже:
+Mac-та:
 
 ```text
-output/articles/YYYY-MM-DD/latest/
+stop.command
+```
+
+Немесе terminal:
+
+```bash
+./stop.sh
+```
+
+Бұл GUI және Ollama контейнерлерін тоқтатады.
+
+## Нәтиже
+
+```text
 output/digest_YYYY-MM-DD.md
+output/articles/YYYY-MM-DD/latest/
 data/news.sqlite3
 ```
 
-GUI ішінде **Бүгінгі мақалалар** блогы тек `latest/` папкасындағы соңғы daily run нәтижесін көрсетеді. Әр карточкада **Көшіру** және **Толық көру** батырмалары бар.
+GUI тек `latest/` папкасындағы бүгінгі соңғы нәтижені көрсетеді. Әр daily run алдында `latest/` тазаланады.
 
-## LM Studio
+## Ескерту
 
-LM Studio қолдану үшін:
+GUI local қолдануға арналған. Docker Compose порттарды `127.0.0.1` арқылы ашады; endpoint-терді сыртқы интернетке жарияламаңыз.
 
-1. LM Studio ашыңыз.
-2. Developer / Local Server бөлімінде серверді іске қосыңыз.
-3. Port: `1234`.
-4. GUI ішінде ИИ provider ретінде `LM Studio` таңдаңыз.
-
-Әдепкі URL:
+Ollama setup журналы:
 
 ```text
-http://host.docker.internal:1234/v1
-```
-
-Хосттан тексеру:
-
-```bash
-curl http://localhost:1234/v1/models
-```
-
-Егер LM Studio табылмаса, app құламайды: резерв шаблонмен мақала сақтайды және GUI-де қысқа ескерту көрсетеді.
-
-## Ollama
-
-Ollama default-та қосылмайды және image download жасамайды. Ол тек бөлек profile арқылы керек кезде іске қосылады:
-
-```bash
-docker compose --profile ollama up -d ollama
-docker compose --profile ollama --profile setup run --rm ollama-pull
-```
-
-GUI ішінде ИИ provider ретінде `Ollama` таңдауға болады. Егер Ollama profile қосылмаған болса, app fallback қолданады.
-
-## Әзірлеушілер үшін
-
-CLI командалар сақталған:
-
-```bash
-docker compose run --rm app python app/main.py collect
-docker compose run --rm app python app/main.py report
-docker compose run --rm app python app/main.py article --mode fast --limit 5 --replace-today
-docker compose run --rm app python app/main.py all --mode fast
-```
-
-LM Studio арқылы CLI:
-
-```bash
-docker compose run --rm \
-  -e AI_PROVIDER=lmstudio \
-  -e LMSTUDIO_MODEL=openai/gpt-oss-20b \
-  app python app/main.py article --mode fast --limit 5 --replace-today
-```
-
-Тексеру:
-
-```bash
-python3 -m compileall app
-docker compose config
-docker compose --profile gui up -d --build gui
-curl http://localhost:8000/api/status
+data/ollama_setup.log
+data/ollama_status.json
 ```
 
 GDELT `429 Too Many Requests` қайтарса, `fast` режимін қолданыңыз немесе кейінірек қайталап көріңіз.

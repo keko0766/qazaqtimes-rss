@@ -60,7 +60,10 @@ def generate_text(prompt: str) -> str | None:
         )
         response.raise_for_status()
         data = response.json()
-        text = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            return None
+        text = choice["message"]["content"]
     except (KeyError, IndexError, TypeError, requests.RequestException, ValueError) as exc:
         log_unavailable(exc)
         _available_cache = False

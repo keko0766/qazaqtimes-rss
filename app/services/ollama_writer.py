@@ -48,6 +48,8 @@ def generate_text(prompt: str, task_name: str = "мәтін генерациял
         _ollama_available_cache = False
         return None
 
+    if data.get("done_reason") == "length" or data.get("finish_reason") == "length":
+        return None
     text = str(data.get("response", "")).strip()
     return text or None
 

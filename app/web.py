@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+import requests
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,10 +23,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.utils.datetime import today_str
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
+DATA_DIR = PROJECT_ROOT / "data"
+OLLAMA_STATUS_PATH = DATA_DIR / "ollama_status.json"
 COMMANDS = {"collect", "report", "article", "all"}
 PRESETS = {"daily_articles"}
 MODES = {"fast", "normal"}
 AI_PROVIDERS = {"none", "ollama", "lmstudio"}
+LMSTUDIO_DEFAULT_URL = "http://host.docker.internal:1234/v1"
+LMSTUDIO_DEFAULT_MODEL = "model-identifier"
+OLLAMA_DEFAULT_URL = "http://ollama:11434"
+OLLAMA_DEFAULT_MODEL = "qwen2.5:3b"
+_LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
 
 
 class JobState:
@@ -33,7 +44,7 @@ class JobState:
         self.preset = ""
         self.mode = "fast"
         self.limit = 5
-        self.ai_provider = "none"
+        self.ai_provider = "ollama"
         self.started_at = ""
         self.finished_at = ""
         self.returncode: int | None = None
@@ -43,6 +54,9 @@ class JobState:
         self.user_message = ""
 
     def snapshot(self) -> dict:
+        selected_provider = self.ai_provider
+        ollama_state = ollama_status_snapshot(refresh=selected_provider == "ollama")
+        lmstudio_ready = lmstudio_available(refresh=selected_provider == "lmstudio")
         with self.lock:
             return {
                 "running": self.running,
@@ -55,6 +69,7 @@ class JobState:
                 "finished_at": self.finished_at,
                 "returncode": self.returncode,
                 "stopped": self.stop_requested and self.returncode not in (None, 0),
+                "job_status": self.status_label(),
                 "status_label": self.status_label(),
                 "message": self.status_message(),
                 "output": self.output[-240:],
@@ -62,6 +77,14 @@ class JobState:
                 "latest_digest": latest_digest(include_content=False),
                 "latest_articles": today_articles(limit=5),
                 "lmstudio_fallback": self.has_lmstudio_fallback(),
+                "ollama_fallback": self.has_ollama_fallback(),
+                "ollama_available": ollama_state["available"],
+                "ollama_loading": ollama_state["loading"],
+                "ollama_status": ollama_state["status"],
+                "ollama_status_message": ollama_state["message"],
+                "ollama_error": ollama_state["error"],
+                "lmstudio_available": lmstudio_ready,
+                "current_model": current_model(selected_provider),
             }
 
     def status_label(self) -> str:
@@ -90,6 +113,13 @@ class JobState:
 
     def has_lmstudio_fallback(self) -> bool:
         return any("LM Studio қолжетімсіз" in line for line in self.output)
+
+    def has_ollama_fallback(self) -> bool:
+        return any("Ollama дайын емес" in line or "[ollama] қолжетімсіз" in line for line in self.output)
+
+    def select_ai_provider(self, ai_provider: str) -> None:
+        with self.lock:
+            self.ai_provider = ai_provider
 
     def start_command(self, command: str, mode: str, ai_provider: str, limit: int = 5) -> bool:
         if command not in COMMANDS:
@@ -144,8 +174,8 @@ class JobState:
         return True
 
     def _run_steps(self, steps: list[list[str]], ai_provider: str) -> None:
-        env = {**dict_env(), **ai_environment(ai_provider)}
         final_returncode = 0
+        ollama_fallback_reported = False
 
         try:
             for index, cmd in enumerate(steps, start=1):
@@ -153,6 +183,11 @@ class JobState:
                     if self.stop_requested:
                         final_returncode = 130
                         break
+                if ai_provider == "ollama" and not ollama_is_ready():
+                    if not ollama_fallback_reported:
+                        self.append("[gui] Ollama дайын емес. Резерв шаблон қолданылды.")
+                        ollama_fallback_reported = True
+                env = {**dict_env(), **ai_environment(ai_provider)}
                 self.append(f"[gui] қадам {index}/{len(steps)}: {' '.join(cmd)}")
                 returncode = self._run_process(cmd, env)
                 final_returncode = returncode
@@ -170,6 +205,8 @@ class JobState:
             summary = build_run_summary(self.output)
             if self.has_lmstudio_fallback():
                 summary = f"{summary}\nLM Studio табылмады, резерв шаблон қолданылды." if summary else "LM Studio табылмады, резерв шаблон қолданылды."
+            if self.has_ollama_fallback():
+                summary = f"{summary}\nOllama дайын емес. Резерв шаблон қолданылды." if summary else "Ollama дайын емес. Резерв шаблон қолданылды."
             self.user_message = summary
 
     def _run_process(self, cmd: list[str], env: dict[str, str]) -> int:
@@ -230,6 +267,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        if not self.is_local_request():
+            self.send_json({"ok": False, "error": "Тек local request рұқсат"}, status=403)
+            return
+        if not self.is_allowed_origin():
+            self.send_json({"ok": False, "error": "Origin қате"}, status=403)
+            return
         path = urlparse(self.path).path
         if path == "/api/stop":
             if not JOB.stop():
@@ -239,6 +282,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/open-folder":
             self.send_json(open_today_folder())
+            return
+        if path == "/api/ai-provider":
+            self.handle_ai_provider()
             return
         if path == "/api/run-preset":
             self.handle_run_preset()
@@ -250,12 +296,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_run_preset(self) -> None:
         payload = self.read_json()
-        preset = str(payload.get("preset", "daily_articles")).strip()
+        if payload is None:
+            self.send_json({"ok": False, "error": "JSON payload қате"}, status=400)
+            return
+        preset = str(payload.get("preset", "")).strip()
         mode = parse_mode(payload.get("mode", "fast"))
         limit = parse_limit(payload.get("limit", 5))
-        ai_provider = parse_ai_provider(payload.get("ai_provider", "none"), payload.get("use_ollama", False))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
         if preset not in PRESETS:
             self.send_json({"ok": False, "error": "Preset қате"}, status=400)
+            return
+        if mode is None:
+            self.send_json({"ok": False, "error": "Режим қате"}, status=400)
+            return
+        if limit is None:
+            self.send_json({"ok": False, "error": "Мақала саны қате"}, status=400)
+            return
+        if ai_provider is None:
+            self.send_json({"ok": False, "error": "ИИ режимі қате"}, status=400)
             return
         if not JOB.start_preset(preset, mode, ai_provider, limit=limit):
             self.send_json({"ok": False, "error": "Тапсырма қазір орындалып жатыр"}, status=409)
@@ -264,26 +322,65 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_run(self) -> None:
         payload = self.read_json()
-        command = str(payload.get("command", "all")).strip()
+        if payload is None:
+            self.send_json({"ok": False, "error": "JSON payload қате"}, status=400)
+            return
+        command = str(payload.get("command", "")).strip()
         mode = parse_mode(payload.get("mode", "fast"))
         limit = parse_limit(payload.get("limit", 5))
-        ai_provider = parse_ai_provider(payload.get("ai_provider", "none"), payload.get("use_ollama", False))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
         if command not in COMMANDS:
             self.send_json({"ok": False, "error": "Команда қате"}, status=400)
+            return
+        if mode is None:
+            self.send_json({"ok": False, "error": "Режим қате"}, status=400)
+            return
+        if limit is None:
+            self.send_json({"ok": False, "error": "Мақала саны қате"}, status=400)
+            return
+        if ai_provider is None:
+            self.send_json({"ok": False, "error": "ИИ режимі қате"}, status=400)
             return
         if not JOB.start_command(command, mode, ai_provider, limit=limit):
             self.send_json({"ok": False, "error": "Тапсырма қазір орындалып жатыр"}, status=409)
             return
         self.send_json({"ok": True})
 
-    def read_json(self) -> dict:
+    def handle_ai_provider(self) -> None:
+        payload = self.read_json()
+        if payload is None:
+            self.send_json({"ok": False, "error": "JSON payload қате"}, status=400)
+            return
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
+        if ai_provider is None:
+            self.send_json({"ok": False, "error": "ИИ режимі қате"}, status=400)
+            return
+        JOB.select_ai_provider(ai_provider)
+        self.send_json({"ok": True, "ai_provider": ai_provider})
+
+    def read_json(self) -> dict | None:
         length = int(self.headers.get("content-length", "0"))
+        content_type = self.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            return None
         if length <= 0:
-            return {}
+            return None
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except json.JSONDecodeError:
-            return {}
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def is_local_request(self) -> bool:
+        host = self.client_address[0]
+        return host in {"127.0.0.1", "::1"} or host.startswith("172.") or host.startswith("192.168.") or host.startswith("10.")
+
+    def is_allowed_origin(self) -> bool:
+        origin = self.headers.get("origin") or self.headers.get("referer")
+        if not origin:
+            return True
+        host = urlparse(origin).hostname
+        return host in {"localhost", "127.0.0.1", "::1"}
 
     def send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -322,7 +419,9 @@ def dict_env() -> dict[str, str]:
 
 def ai_environment(provider: str) -> dict[str, str]:
     if provider == "ollama":
-        return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
+        if ollama_is_ready():
+            return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
+        return {"AI_PROVIDER": "none", "USE_OLLAMA": "false"}
     if provider == "lmstudio":
         return {
             "AI_PROVIDER": "lmstudio",
@@ -332,24 +431,139 @@ def ai_environment(provider: str) -> dict[str, str]:
     return {"AI_PROVIDER": "none", "USE_OLLAMA": "false"}
 
 
-def parse_mode(value: object) -> str:
+def parse_mode(value: object) -> str | None:
     mode = str(value or "fast").strip().lower()
-    return mode if mode in MODES else "fast"
+    return mode if mode in MODES else None
 
 
-def parse_ai_provider(value: object, use_ollama: object = False) -> str:
+def parse_ai_provider(value: object, use_ollama: object = False) -> str | None:
     provider = str(value or "").strip().lower()
     if provider in AI_PROVIDERS:
         return provider
-    return "ollama" if bool(use_ollama) else "none"
+    if not provider:
+        return "ollama" if bool(use_ollama) else "none"
+    return None
 
 
-def parse_limit(value: object) -> int:
+def parse_limit(value: object) -> int | None:
     try:
         limit = int(value)
     except (TypeError, ValueError):
-        return 5
-    return min(max(limit, 1), 10)
+        return None
+    if 1 <= limit <= 10:
+        return limit
+    return None
+
+
+def lmstudio_available(refresh: bool = False) -> bool:
+    now = time.time()
+    if not refresh and now - float(_LMSTUDIO_STATUS["checked_at"]) < 5:
+        return bool(_LMSTUDIO_STATUS["available"])
+    try:
+        response = requests.get(f"{lmstudio_url()}/models", timeout=1.5)
+        ready = response.ok
+    except requests.RequestException:
+        ready = False
+    _LMSTUDIO_STATUS["checked_at"] = now
+    _LMSTUDIO_STATUS["available"] = ready
+    return ready
+
+
+def lmstudio_url() -> str:
+    return os.getenv("LMSTUDIO_URL", LMSTUDIO_DEFAULT_URL).rstrip("/")
+
+
+def current_model(provider: str) -> str:
+    if provider == "ollama":
+        return ollama_model()
+    if provider == "lmstudio":
+        return os.getenv("LMSTUDIO_MODEL", LMSTUDIO_DEFAULT_MODEL)
+    return ""
+
+
+def ollama_status_snapshot(refresh: bool = False) -> dict:
+    status_file = read_ollama_status_file()
+    available = ollama_model_available() if refresh else False
+    state = str(status_file.get("state") or "").lower()
+    message = str(status_file.get("message") or "")
+    error = str(status_file.get("error") or "")
+
+    if available:
+        return {
+            "available": True,
+            "loading": False,
+            "status": "Дайын",
+            "message": "Ollama дайын",
+            "error": "",
+        }
+    if state in {"starting", "pulling", "running"}:
+        return {
+            "available": False,
+            "loading": True,
+            "status": "Дайындалып жатыр",
+            "message": message or "Ollama дайындалып жатыр",
+            "error": "",
+        }
+    if state == "ready":
+        return {
+            "available": False,
+            "loading": False,
+            "status": "Қате",
+            "message": "Ollama жауап бермеді",
+            "error": "Model status file ready, but /api/tags unavailable",
+        }
+    if state == "error":
+        return {
+            "available": False,
+            "loading": False,
+            "status": "Қате",
+            "message": message or "Ollama қате",
+            "error": error,
+        }
+    return {
+        "available": False,
+        "loading": False,
+        "status": "Қосылмаған",
+        "message": "Ollama қосылмаған",
+        "error": "",
+    }
+
+
+def read_ollama_status_file() -> dict:
+    if not OLLAMA_STATUS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(OLLAMA_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"state": "error", "message": "Ollama status оқылмады"}
+    return data if isinstance(data, dict) else {}
+
+
+def ollama_is_ready() -> bool:
+    return ollama_model_available()
+
+
+def ollama_model_available() -> bool:
+    try:
+        response = requests.get(f"{ollama_url()}/api/tags", timeout=2)
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return False
+    wanted = ollama_model().lower()
+    for item in data.get("models", []):
+        name = str(item.get("name") or item.get("model") or "").lower()
+        if name == wanted or name.startswith(f"{wanted}@"):
+            return True
+    return False
+
+
+def ollama_url() -> str:
+    return os.getenv("OLLAMA_URL", OLLAMA_DEFAULT_URL).rstrip("/")
+
+
+def ollama_model() -> str:
+    return os.getenv("OLLAMA_MODEL", OLLAMA_DEFAULT_MODEL)
 
 
 def today_article_folder() -> Path:
@@ -371,7 +585,7 @@ def latest_digest(include_content: bool = False) -> dict:
     digest = latest_digest_path()
     if not digest:
         return {"path": "", "preview": ""}
-    text = digest.read_text(encoding="utf-8", errors="replace")
+    text = digest.read_text(encoding="utf-8", errors="replace") if include_content else read_text_preview(digest, 800)
     payload = {
         "path": str(digest.relative_to(PROJECT_ROOT)),
         "preview": text[:800],
@@ -390,7 +604,7 @@ def today_articles(limit: int = 5) -> list[dict]:
 
 
 def article_payload(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_text_preview(path, 5000)
     body = strip_front_matter(text)
     return {
         "path": str(path.relative_to(PROJECT_ROOT)),
@@ -430,6 +644,11 @@ def open_today_folder() -> dict:
             "error": "Папканы автоматты ашу мүмкін болмады. Жолды қолмен ашыңыз.",
         }
     return {"ok": True, "path": str(folder.relative_to(PROJECT_ROOT))}
+
+
+def read_text_preview(path: Path, limit: int) -> str:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        return handle.read(limit)
 
 
 def build_run_summary(output: list[str]) -> str:
@@ -595,6 +814,15 @@ INDEX_HTML = r"""<!doctype html>
       background: #fff7e6;
       color: #6b4a00;
     }
+    .ai-state {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .muted { color: var(--muted); }
     .results-head {
       display: flex;
@@ -720,19 +948,21 @@ INDEX_HTML = r"""<!doctype html>
           <input id="limit" type="number" min="1" max="10" value="5">
         </div>
         <div class="field">
-          <label for="aiProvider">ИИ provider</label>
+          <label for="aiProvider">ИИ режимі</label>
           <select id="aiProvider">
             <option value="none">Өшірулі</option>
             <option value="lmstudio">LM Studio</option>
-            <option value="ollama">Ollama</option>
+            <option value="ollama" selected>Ollama</option>
           </select>
           <div id="lmHint" class="hint">LM Studio ашық және Local Server қосулы болуы керек. Әдепкі URL: http://host.docker.internal:1234/v1</div>
+          <div id="aiState" class="ai-state">ИИ: Қосылмаған</div>
         </div>
       </details>
       <div class="status">
         <strong id="state">Дайын</strong>
         <div id="meta" class="muted">Бір батырмамен бүгінгі мақалаларды жасаңыз.</div>
         <div id="lmNotice" class="notice">LM Studio табылмады, резерв шаблон қолданылды.</div>
+        <div id="ollamaNotice" class="notice">Ollama дайын емес. Резерв шаблон қолданылды.</div>
       </div>
     </aside>
     <section>
@@ -765,7 +995,9 @@ INDEX_HTML = r"""<!doctype html>
     const digestPath = document.querySelector("#digestPath");
     const digestPreview = document.querySelector("#digestPreview");
     const lmNotice = document.querySelector("#lmNotice");
+    const ollamaNotice = document.querySelector("#ollamaNotice");
     const lmHint = document.querySelector("#lmHint");
+    const aiState = document.querySelector("#aiState");
     const daily = document.querySelector("#daily");
     const collect = document.querySelector("#collect");
     const report = document.querySelector("#report");
@@ -820,6 +1052,8 @@ INDEX_HTML = r"""<!doctype html>
       [daily, collect, report, article].forEach((button) => button.disabled = status.running);
       viewer.textContent = (status.output || []).join("\n") || "Журнал әзірге жоқ.";
       lmNotice.style.display = status.lmstudio_fallback ? "block" : "none";
+      ollamaNotice.style.display = status.ollama_fallback ? "block" : "none";
+      renderAiStatus(status);
       renderArticles(status.latest_articles || []);
       renderDigest(status.latest_digest || {});
       return status;
@@ -871,6 +1105,23 @@ INDEX_HTML = r"""<!doctype html>
       digestPreview.textContent = digest.preview || "Дайджест әзірге жоқ.";
     }
 
+    function renderAiStatus(status) {
+      if (aiProvider.value === "ollama") {
+        const model = status.current_model ? ` · ${status.current_model}` : "";
+        let label = status.ollama_status || "Қосылмаған";
+        if (status.ollama_loading) label = "Дайындалып жатыр";
+        if (status.ollama_available) label = "Дайын";
+        aiState.textContent = `Ollama: ${label}${model}`;
+        return;
+      }
+      if (aiProvider.value === "lmstudio") {
+        const model = status.current_model ? ` · ${status.current_model}` : "";
+        aiState.textContent = `LM Studio: ${status.lmstudio_available ? "Дайын" : "Қосылмаған"}${model}`;
+        return;
+      }
+      aiState.textContent = "ИИ: Қосылмаған";
+    }
+
     function escapeHTML(value) {
       return String(value)
         .replaceAll("&", "&amp;")
@@ -896,8 +1147,18 @@ INDEX_HTML = r"""<!doctype html>
       const result = await getJSON("/api/open-folder", {method: "POST"});
       if (!result.ok) meta.textContent = `${result.error} ${result.path}`;
     });
-    aiProvider.addEventListener("change", () => {
+    aiProvider.addEventListener("change", async () => {
       lmHint.style.display = aiProvider.value === "lmstudio" ? "block" : "none";
+      try {
+        await getJSON("/api/ai-provider", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: payload({})
+        });
+        await refreshAll();
+      } catch (error) {
+        meta.textContent = error.message;
+      }
     });
     setInterval(refreshAll, 2500);
     refreshAll();
@@ -908,7 +1169,7 @@ INDEX_HTML = r"""<!doctype html>
 
 
 def main() -> int:
-    host = "0.0.0.0"
+    host = os.getenv("GUI_HOST", "127.0.0.1")
     port = 8000
     print(f"[gui] listening on http://{host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

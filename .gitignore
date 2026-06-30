@@ -3,5 +3,7 @@ __pycache__/
 .DS_Store
 .env
 data/*.sqlite3
+data/*.log
+data/*.json
 output/*.md
 output/**/*.md

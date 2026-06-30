@@ -1,3 +1,5 @@
+name: geo-news-bot
+
 services:
   ollama:
     image: ollama/ollama:latest
@@ -5,7 +7,7 @@ services:
     profiles:
       - ollama
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
@@ -17,7 +19,7 @@ services:
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
-    command: sh -c "sleep 10 && ollama pull $$OLLAMA_MODEL"
+    entrypoint: ["sh", "-c", "sleep 10 && ollama pull $$OLLAMA_MODEL"]
     volumes:
       - ollama_data:/root/.ollama
     profiles:
@@ -50,11 +52,12 @@ services:
     profiles:
       - gui
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
+      GUI_HOST: 0.0.0.0
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
       TZ: ${APP_TIMEZONE:-Asia/Almaty}
-      AI_PROVIDER: ${AI_PROVIDER:-none}
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
       USE_OLLAMA: ${USE_OLLAMA:-false}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
