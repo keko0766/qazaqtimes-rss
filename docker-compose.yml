@@ -18,7 +18,7 @@ services:
       - ollama
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
     entrypoint: ["sh", "-c", "sleep 10 && ollama pull $$OLLAMA_MODEL"]
     volumes:
       - ollama_data:/root/.ollama
@@ -35,7 +35,7 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-none}
       USE_OLLAMA: ${USE_OLLAMA:-false}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
       LMSTUDIO_URL: ${LMSTUDIO_URL:-http://host.docker.internal:1234/v1}
       LMSTUDIO_MODEL: ${LMSTUDIO_MODEL:-model-identifier}
@@ -60,7 +60,7 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       USE_OLLAMA: ${USE_OLLAMA:-false}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
       LMSTUDIO_URL: ${LMSTUDIO_URL:-http://host.docker.internal:1234/v1}
       LMSTUDIO_MODEL: ${LMSTUDIO_MODEL:-model-identifier}

@@ -8,7 +8,7 @@ from app.services.ai_types import AITextResult
 
 
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 DEFAULT_OLLAMA_TIMEOUT = 180
 
 ARTICLE_JSON_OPTIONS = {

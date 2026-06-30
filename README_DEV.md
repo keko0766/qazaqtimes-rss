@@ -631,14 +631,14 @@ Ollama provider.
 Defaults:
 
 - `OLLAMA_URL=http://ollama:11434`
-- `OLLAMA_MODEL=qwen2.5:3b` — default; Kazakh quality may be weak, many articles may fall back to template
+- `OLLAMA_MODEL=qwen2.5:7b` — recommended default for Kazakh article quality
 - `OLLAMA_TIMEOUT=180`
 
 Recommended models for Kazakh news writing:
 
-- `qwen2.5:3b` — works on modest hardware; Kazakh journalistic quality often insufficient
+- `qwen2.5:3b` — light mode; weak Kazakh quality, fallback often
 - `qwen2.5:7b` — recommended balance of quality and resource use
-- `qwen2.5:14b` — best quality if hardware allows
+- `qwen2.5:14b` — heavy quality mode if hardware allows
 
 Article JSON generation options (sent in `/api/generate` payload):
 
@@ -1003,7 +1003,7 @@ output/debug_ai/YYYY-MM-DD/
 ```json
 {
   "provider": "ollama",
-  "model": "qwen2.5:3b",
+  "model": "qwen2.5:7b",
   "used_fallback": false,
   "reject_reason": null,
   "raw_length": 1704,
@@ -1046,7 +1046,7 @@ Troubleshoot flow:
 Article writer log үлгісі:
 
 ```text
-[ai] provider=ollama model=qwen2.5:3b
+[ai] provider=ollama model=qwen2.5:7b
 [ai] ollama available=true
 [ai] raw response length=1234
 [ai] json parsed=true
@@ -1126,11 +1126,11 @@ Env:
 AI_PROVIDER=ollama
 USE_OLLAMA=true
 OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TIMEOUT=180
 ```
 
-`qwen2.5:3b` default болса да, қазақша журналистикалық мәтін сапасы әлсіз болуы мүмкін — 3/3 fallback нормальды нәтиже. Жақсырақ сапа үшін `OLLAMA_MODEL=qwen2.5:7b` немесе `qwen2.5:14b` қолдан.
+`qwen2.5:7b` ұсынылатын default. `qwen2.5:3b` жеңіл режим ретінде жұмыс істейді, бірақ қазақша мәтіні әлсіз болғандықтан fallback жиі болады. `qwen2.5:14b` — ауыр quality mode.
 
 Ollama endpoint:
 
@@ -1203,7 +1203,7 @@ Default `docker compose config` ішінде іске қосылмайды. One-
 
 - Profiles: `ollama`, `setup`
 - `OLLAMA_HOST=http://ollama:11434`
-- `OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}`
+- `OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}`
 - Command: `sleep 10 && ollama pull $$OLLAMA_MODEL`
 
 ### `docker-compose.gpu.yml`
@@ -1332,7 +1332,7 @@ MAX_RSS_ITEMS_PER_SOURCE=30
 AI_PROVIDER=none
 USE_OLLAMA=false
 OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TIMEOUT=180
 LMSTUDIO_URL=http://host.docker.internal:1234/v1
 LMSTUDIO_MODEL=model-identifier

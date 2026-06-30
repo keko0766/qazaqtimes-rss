@@ -33,7 +33,7 @@ AI_PROVIDERS = {"none", "ollama", "lmstudio"}
 LMSTUDIO_DEFAULT_URL = "http://host.docker.internal:1234/v1"
 LMSTUDIO_DEFAULT_MODEL = "model-identifier"
 OLLAMA_DEFAULT_URL = "http://ollama:11434"
-OLLAMA_DEFAULT_MODEL = "qwen2.5:3b"
+OLLAMA_DEFAULT_MODEL = "qwen2.5:7b"
 _LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
 
 
