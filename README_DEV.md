@@ -652,7 +652,7 @@ Article JSON generation options (sent in `/api/generate` payload):
 - `use_ollama()`
 - `generate_draft(cluster)`
 - `generate_text(prompt, task_name="мәтін генерациялау")`
-- `ollama_available()` — `GET /api/tags`.
+- `ollama_available()` — `GET /api/tags`; selected `OLLAMA_MODEL` must be present.
 - `log_ollama_unavailable(message)`
 - `ollama_timeout()`
 - `build_prompt(cluster)`
@@ -1575,7 +1575,8 @@ ls -la output/articles/$(date +%Y-%m-%d)/latest
 - Command allowlist: GUI command execution `collect/report/all/article` және `daily_articles` preset allowlist арқылы ғана қалады. `shell=True` қолданылмайды.
 - CSRF/local hardening: POST request үшін local client және Origin/Referer check қосылды. GUI endpoint-терді сыртқы интернетке ашуға болмайды.
 - AI truncation: LM Studio `finish_reason=length` болса және Ollama `done_reason/finish_reason=length` болса, AI мәтіні қабылданбайды, fallback қолданылады.
-- Preview memory: `/api/status` preview үшін digest/article файлдарын толық оқымай, тек шағын preview бөлігі оқылады. `/api/digest` толық content сұралғанда ғана толық оқиды.
+- Ollama model preflight: CLI және GUI `/api/tags` ішінен selected `OLLAMA_MODEL` барын тексереді; model missing болса fallback қолданылады және status/debug reason анық жазылады.
+- Preview memory: `/api/status` preview үшін digest/article файлдарын толық оқымай, тек шағын preview бөлігі оқылады; article preview paragraph breaks сақтайды. `/api/digest` толық content сұралғанда ғана толық оқиды.
 
 ### Тексерілген қауіпсіздік нүктелері
 

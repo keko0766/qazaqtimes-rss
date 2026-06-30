@@ -101,19 +101,33 @@ def ollama_available() -> bool:
         return _ollama_available_cache
 
     base_url = os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     try:
         response = requests.get(
             f"{base_url}/api/tags",
             timeout=min(ollama_timeout(), 10),
         )
         response.raise_for_status()
-        response.json()
+        data = response.json()
     except (requests.RequestException, ValueError) as exc:
         log_ollama_unavailable(f"алдын ала тексеру сәтсіз: {exc}")
         _ollama_available_cache = False
         return False
+    if not has_ollama_model(data, model):
+        log_ollama_unavailable(f"модель табылмады: {model}")
+        _ollama_available_cache = False
+        return False
     _ollama_available_cache = True
     return True
+
+
+def has_ollama_model(data: dict, model: str) -> bool:
+    wanted = model.lower()
+    for item in data.get("models", []):
+        name = str(item.get("name") or item.get("model") or "").lower()
+        if name == wanted or name.startswith(f"{wanted}@"):
+            return True
+    return False
 
 
 def log_ollama_unavailable(message: str) -> None:

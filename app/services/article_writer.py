@@ -121,6 +121,12 @@ REJECTED_TITLE_PATTERNS = {
     "analysis video",
     "video only",
     "europe live",
+    "america first",
+    "germany news:",
+    "heat wave",
+    "temperatures plunge",
+    "earthquake relief",
+    "what aftermath",
 }
 
 TOPIC_LIMITS = {

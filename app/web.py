@@ -35,6 +35,13 @@ LMSTUDIO_DEFAULT_MODEL = "model-identifier"
 OLLAMA_DEFAULT_URL = "http://ollama:11434"
 OLLAMA_DEFAULT_MODEL = "qwen2.5:7b"
 _LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
+_OLLAMA_STATUS = {
+    "checked_at": 0.0,
+    "available": False,
+    "reachable": False,
+    "model_present": False,
+    "error": "",
+}
 
 
 class JobState:
@@ -372,11 +379,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "ai_provider": ai_provider})
 
     def read_json(self) -> dict | None:
-        length = int(self.headers.get("content-length", "0"))
+        try:
+            length = int(self.headers.get("content-length", "0"))
+        except ValueError:
+            return None
         content_type = self.headers.get("content-type", "")
         if "application/json" not in content_type.lower():
             return None
-        if length <= 0:
+        if length <= 0 or length > 65536:
             return None
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -494,7 +504,8 @@ def current_model(provider: str) -> str:
 
 def ollama_status_snapshot(refresh: bool = False) -> dict:
     status_file = read_ollama_status_file()
-    available = ollama_model_available() if refresh else False
+    model_state = ollama_model_state() if refresh else dict(_OLLAMA_STATUS)
+    available = bool(model_state["available"])
     state = str(status_file.get("state") or "").lower()
     message = str(status_file.get("message") or "")
     error = str(status_file.get("error") or "")
@@ -506,6 +517,15 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
             "status": "Дайын",
             "message": "Ollama дайын",
             "error": "",
+        }
+    if model_state["reachable"] and not model_state["model_present"]:
+        model = ollama_model()
+        return {
+            "available": False,
+            "loading": False,
+            "status": "Қате",
+            "message": f"Ollama моделі табылмады: {model}",
+            "error": model_state["error"] or f"Model not found: {model}",
         }
     if state in {"starting", "pulling", "running"}:
         return {
@@ -568,18 +588,43 @@ def ollama_is_ready() -> bool:
 
 
 def ollama_model_available() -> bool:
+    return bool(ollama_model_state()["available"])
+
+
+def ollama_model_state() -> dict:
+    now = time.time()
+    if now - float(_OLLAMA_STATUS["checked_at"]) < 5:
+        return dict(_OLLAMA_STATUS)
+
+    model = ollama_model()
+    state = {
+        "checked_at": now,
+        "available": False,
+        "reachable": False,
+        "model_present": False,
+        "error": "",
+    }
     try:
         response = requests.get(f"{ollama_url()}/api/tags", timeout=2)
         response.raise_for_status()
         data = response.json()
-    except (requests.RequestException, ValueError):
-        return False
-    wanted = ollama_model().lower()
+    except (requests.RequestException, ValueError) as exc:
+        state["error"] = str(exc)
+        _OLLAMA_STATUS.update(state)
+        return dict(_OLLAMA_STATUS)
+
+    state["reachable"] = True
+    wanted = model.lower()
     for item in data.get("models", []):
         name = str(item.get("name") or item.get("model") or "").lower()
         if name == wanted or name.startswith(f"{wanted}@"):
-            return True
-    return False
+            state["available"] = True
+            state["model_present"] = True
+            break
+    if not state["model_present"]:
+        state["error"] = f"Model not found: {model}"
+    _OLLAMA_STATUS.update(state)
+    return dict(_OLLAMA_STATUS)
 
 
 def ollama_url() -> str:
@@ -633,8 +678,15 @@ def article_payload(path: Path) -> dict:
     return {
         "path": str(path.relative_to(PROJECT_ROOT)),
         "title": article_title(text, body),
-        "preview": " ".join(line.strip() for line in body.splitlines() if line.strip())[:400],
+        "preview": markdown_preview(body, 700),
     }
+
+
+def markdown_preview(text: str, limit: int) -> str:
+    preview = text.strip()
+    if len(preview) <= limit:
+        return preview
+    return preview[:limit].rstrip() + "..."
 
 
 def strip_front_matter(text: str) -> str:
@@ -903,6 +955,7 @@ INDEX_HTML = r"""<!doctype html>
       margin: 0 0 10px;
       color: #354052;
       font-size: 13px;
+      white-space: pre-wrap;
     }
     .card-actions {
       display: grid;
