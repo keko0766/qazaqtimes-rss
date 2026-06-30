@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import os
 
+from app.services.ai_types import AITextResult
 from app.services import lmstudio_writer, ollama_writer
 
 
-def generate_article_text(prompt: str) -> tuple[str | None, str]:
+def generate_article_text(prompt: str) -> AITextResult:
     provider = selected_provider()
     if provider == "lmstudio":
-        text = lmstudio_writer.generate_text(prompt)
-        return (text, "lmstudio") if text else (None, "fallback")
+        return lmstudio_writer.generate_text_result(prompt)
     if provider == "ollama":
-        text = ollama_writer.generate_text(prompt)
-        return (text, "ollama") if text else (None, "fallback")
-    return None, "fallback"
+        return ollama_writer.generate_text_result(prompt)
+    return AITextResult(provider=provider, error_reason="provider_disabled")
 
 
 def selected_provider() -> str:

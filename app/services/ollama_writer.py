@@ -4,10 +4,19 @@ import os
 
 import requests
 
+from app.services.ai_types import AITextResult
+
 
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
 DEFAULT_OLLAMA_TIMEOUT = 180
+
+ARTICLE_JSON_OPTIONS = {
+    "temperature": 0.2,
+    "top_p": 0.8,
+    "repeat_penalty": 1.2,
+    "num_predict": 500,
+}
 
 _ollama_unavailable_logged = False
 _ollama_available_cache: bool | None = None
@@ -23,14 +32,26 @@ def generate_draft(cluster: dict) -> str | None:
 
 
 def generate_text(prompt: str, task_name: str = "мәтін генерациялау") -> str | None:
+    result = generate_text_result(prompt, task_name)
+    return result.text if result.text and not result.error_reason else None
+
+
+def generate_text_result(prompt: str, task_name: str = "мәтін генерациялау") -> AITextResult:
     global _ollama_available_cache
+    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     if not ollama_available():
-        return None
+        return AITextResult(
+            provider="ollama",
+            model=model,
+            ollama_available=False,
+            error_reason="ollama_not_ready",
+        )
 
     payload = {
-        "model": os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        "model": model,
         "prompt": prompt,
         "stream": False,
+        "options": ARTICLE_JSON_OPTIONS,
     }
     base_url = os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
     timeout = ollama_timeout()
@@ -46,12 +67,32 @@ def generate_text(prompt: str, task_name: str = "мәтін генерациял
     except (requests.RequestException, ValueError) as exc:
         log_ollama_unavailable(f"{task_name} сәтсіз: {exc}")
         _ollama_available_cache = False
-        return None
+        return AITextResult(
+            provider="ollama",
+            model=model,
+            ollama_available=False,
+            error_reason="ollama_not_ready",
+            error=str(exc),
+        )
 
-    if data.get("done_reason") == "length" or data.get("finish_reason") == "length":
-        return None
-    text = str(data.get("response", "")).strip()
-    return text or None
+    raw_response = str(data.get("response", ""))
+    finish_reason = data.get("finish_reason")
+    done_reason = data.get("done_reason")
+    error_reason = None
+    if done_reason == "length" or finish_reason == "length":
+        error_reason = "finish_reason_length"
+    elif not raw_response.strip():
+        error_reason = "empty_response"
+    return AITextResult(
+        provider="ollama",
+        model=model,
+        text=raw_response.strip() or None,
+        raw_response=raw_response,
+        finish_reason=str(finish_reason) if finish_reason else None,
+        done_reason=str(done_reason) if done_reason else None,
+        ollama_available=True,
+        error_reason=error_reason,
+    )
 
 
 def ollama_available() -> bool:

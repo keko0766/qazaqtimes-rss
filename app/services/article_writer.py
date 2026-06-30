@@ -1,18 +1,112 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 from pathlib import Path
 
+from app.services.ai_types import (
+    AI_ARTICLE_JSON_FIELDS,
+    BAD_KAZAKH_PHRASES,
+    AITextResult,
+    MIN_EVENT_KEYWORD_OVERLAP,
+)
 from app.services.ai_writer import generate_article_text
 from app.utils.datetime import today_str
 
 
-BANNED_PHRASES = {
-    "ұшқындар",
-    "ғарыштық атқару",
-    "шексіз күндері",
+REQUIRED_JSON_FIELDS = AI_ARTICLE_JSON_FIELDS
+MIN_JSON_FIELD_CHARS = 15
+MIN_EVENT_KEYWORD_OVERLAP_REQUIRED = MIN_EVENT_KEYWORD_OVERLAP
+
+BULLET_FIELD_PREFIXES = ("- ", "• ")
+
+GIBBERISH_PATTERNS = (
+    r"\b\w*улу\b",
+    r"\b\w*улейт\b",
+    r"\b\w*лулу\b",
+    r"\bнатыйжа\w*\b",
+    r"\bкечерген\b",
+    r" болумен\b",
+    r"\bынгікаст\b",
+    r"\bлевантия\b",
+    r"\bруhani\b",
+    r"\bоруңыз\b",
+)
+
+TOO_GENERIC_PHRASES = (
+    "табиғий боюнда",
+    "көргенді жеңілеттікт",
+    "маңызды сәйкес",
+    "айырмачыларда",
+    "көргенді жеңілеттікті",
+    "өз аяғы менен",
+)
+
+TAG_KAZAKH_KEYWORDS = {
+    "usa": ["АҚШ", "Америка"],
+    "iran": ["Иран"],
+    "russia": ["Ресей"],
+    "ukraine": ["Украина"],
+    "china": ["Қытай"],
+    "taiwan": ["Тайвань"],
+    "nato": ["НАТО"],
+    "eu": ["ЕО", "Еуропа"],
+    "middle_east": ["Таяу Шығыс", "Ормуз"],
+    "israel": ["Израиль"],
+    "gaza": ["Газа"],
+    "lebanon": ["Ливан"],
+    "syria": ["Сирия"],
+    "hormuz": ["Ормуз"],
+    "war": ["соққы", "соғыс", "зымыран"],
+    "military": ["соққы"],
+    "diplomacy": ["келіссөз", "дипломатия"],
+    "sanctions": ["санкция"],
+    "nuclear": ["ядерлік"],
+}
+
+TOPIC_KAZAKH_KEYWORDS = {
+    "russia_ukraine": ["Украина", "Ресей", "БҰҰ", "соққы", "энергетика", "гуманитарлық"],
+    "usa_iran": ["Иран", "АҚШ", "Бахрейн", "Кувейт", "келіссөз", "соққы"],
+    "middle_east": ["Иран", "Израиль", "Ливан", "Ормуз", "соққы", "келіссөз"],
+    "nato_eu": ["НАТО", "ЕО", "санкция", "қауіпсіздік"],
+    "china_taiwan": ["Қытай", "Тайвань", "соққы"],
+    "other": ["БҰҰ", "соққы", "келіссөз"],
+}
+
+ENGLISH_TERM_KAZAKH = {
+    "ukraine": ["Украина"],
+    "ukrainian": ["Украина"],
+    "russia": ["Ресей"],
+    "russian": ["Ресей"],
+    "un": ["БҰҰ"],
+    "humanitarian": ["гуманитарлық"],
+    "strike": ["соққы"],
+    "strikes": ["соққы"],
+    "power": ["энергетика"],
+    "energy": ["энергетика"],
+    "electricity": ["энергетика"],
+    "iran": ["Иран"],
+    "iranian": ["Иран"],
+    "usa": ["АҚШ"],
+    "u.s.": ["АҚШ"],
+    "american": ["АҚШ"],
+    "bahrain": ["Бахрейн"],
+    "kuwait": ["Кувейт"],
+    "talks": ["келіссөз"],
+    "negotiation": ["келіссөз"],
+    "negotiations": ["келіссөз"],
+    "missile": ["зымыран", "соққы"],
+    "drone": ["дрон", "соққы"],
+    "war": ["соғыс", "соққы"],
+    "china": ["Қытай"],
+    "taiwan": ["Тайвань"],
+    "nato": ["НАТО"],
+    "lebanon": ["Ливан"],
+    "israel": ["Израиль"],
+    "gaza": ["Газа"],
+    "hormuz": ["Ормуз"],
 }
 
 REJECTED_TITLE_PATTERNS = {
@@ -62,16 +156,77 @@ def select_article_clusters(clusters: list[dict], limit: int = 5) -> list[dict]:
     return selected
 
 
-def generate_kazakh_article(cluster: dict) -> tuple[str | None, str]:
+def generate_kazakh_article(cluster: dict, index: int = 1) -> tuple[str | None, str]:
     prompt = build_prompt(cluster)
-    text, mode = generate_article_text(prompt)
-    if text and is_quality_article(text):
-        print(f"[article] жазу режимі: {mode}")
-        return clean_ai_article(text), mode
+    ai_result = generate_article_text(prompt)
+    raw_text = ai_result.raw_response or ai_result.text or ""
+    reject_reason = ai_result.error_reason
+    sections: dict | None = None
+    rendered = ""
+    json_parsed = False
+    accepted = False
+    quality_details: dict = {}
 
-    if text:
-        print("[article] AI мәтіні сапа тексерісінен өтпеді; fallback қолданылады")
+    print(f"[ai] provider={ai_result.provider} model={ai_result.model}")
+    if ai_result.ollama_available is not None:
+        print(f"[ai] ollama available={str(ai_result.ollama_available).lower()}")
+    print(f"[ai] raw response length={len(ai_result.raw_response)}")
+
+    if reject_reason not in {"ollama_not_ready", "lmstudio_not_ready", "provider_disabled"}:
+        sections, parse_reason = parse_ai_article_json(raw_text)
+        if sections:
+            json_parsed = True
+            print("[ai] json parsed=true")
+            rendered = render_structured_article(kazakh_headline(cluster), sections, cluster)
+            if not reject_reason:
+                accepted, reject_reason, quality_details = is_quality_structured_article(
+                    sections,
+                    rendered,
+                    ai_result,
+                    cluster,
+                )
+        else:
+            print(f"[ai] json parsed=false reason={parse_reason}")
+            if not reject_reason:
+                reject_reason = parse_reason
+
+    if accepted:
+        reject_reason = None
+
+    print(f"[ai] quality accepted={str(accepted).lower()}" + (f" reason={reject_reason}" if reject_reason else ""))
+
+    if accepted:
+        print(f"[article] жазу режимі: {ai_result.provider}")
+        save_ai_debug(
+            index,
+            cluster,
+            prompt,
+            ai_result,
+            sections=sections,
+            rendered=rendered,
+            used_fallback=False,
+            reject_reason=None,
+            json_parsed=json_parsed,
+            quality_details=quality_details,
+        )
+        return rendered, ai_result.provider
+
+    if raw_text.strip():
+        print(f"[article] AI мәтіні сапа тексерісінен өтпеді; reason={reject_reason}")
     print("[article] жазу режимі: fallback")
+    print("[article] fallback қолданылды")
+    save_ai_debug(
+        index,
+        cluster,
+        prompt,
+        ai_result,
+        sections=sections,
+        rendered=rendered,
+        used_fallback=True,
+        reject_reason=reject_reason,
+        json_parsed=json_parsed,
+        quality_details=quality_details,
+    )
     return fallback_article(cluster), "fallback"
 
 
@@ -114,57 +269,47 @@ def article_output_dir(article_date: str, replace_today: bool = False) -> Path:
 
 def build_prompt(cluster: dict) -> str:
     links = [
-        f"* {link.get('source', 'source')} — {link.get('url', '')}"
-        for link in cluster.get("links", [])[:6]
+        f"- {link.get('source', 'source')}: {link.get('title', link.get('url', ''))} — {link.get('url', '')}"
+        for link in cluster.get("links", [])[:3]
         if link.get("url")
     ]
-    sources = ", ".join(cluster.get("sources", [])[:6])
+    sources = ", ".join(cluster.get("sources", [])[:3])
     tags = ", ".join(tag for tag in cluster.get("tags", []) if tag != "untagged")
 
-    return f"""Сен қазақ тілінде қысқа аналитикалық жаңалық мақаласын жазасың.
+    return f"""Тек JSON қайтар. Markdown, code block, түсіндіру немесе JSON алдында/кейін мәтін жоқ.
 
-Тек төмендегі оқиға кластері деректерін қолдан:
+Формат:
+{{
+"lead": "...",
+"what_happened": "...",
+"why_important": "...",
+"what_next": "..."
+}}
 
-title: {cluster.get("title", "")}
-summary: {cluster.get("summary", "")}
-tags: {tags}
-sources: {sources}
-links:
+Мысал (стильді көшір, фактілерді емес):
+{{
+"lead": "Reuters деректеріне қарағанда, Украинада энергетика нысандарына дрон соққысы тіркелді. Оқиға Ресей мен Украина арасындағы соғыс динамикасына қатысты.",
+"what_happened": "Дереккөздер энергетика инфрақұрылымына бағытталған шабуыл туралы хабарлады. Ресей мен Украина тараптардың ресми мәлімдемелері әлі толық расталмады.",
+"why_important": "Энергетика нысандарына соққы инфрақұрылым қауіпсіздігіне және одақтастардың саяси шешімдеріне әсер етуі мүмкін.",
+"what_next": "Әрі қарай Ресей мен Украина тараптардың ресми мәлімдемелері мен соққы салдары туралы деректер бақыланады."
+}}
+
+Ережелер:
+- Қарапайым журналистикалық қазақ тілінде жаз; мысалдағы стильді елікте, фактілерді көшірме.
+- Тақырыптағы негізгі актерлерді (ел, ұйым, тарап) міндетті түрде ата.
+- Әр JSON өрісі нақты осы оқиға туралы болсын; жалпы сөздерден аулақ бол.
+- Әр өріс — 1-2 қысқа сөйлем, bullet (-, •) қолданба.
+- Қырғыз сөздерін қолданба, ерекше сөз ойлап табпа.
+- Факт, сан, есім, цитата ойдан шығарма; дерек аз болса, сақ тұжырым қолдан.
+- Дереккөз тізімін, тақырып немесе heading жазба.
+- Тек JSON қайтар.
+
+Cluster title: {cluster.get("title", "")}
+Summary: {cluster.get("summary", "")}
+Tags: {tags}
+Sources: {sources}
+Source links:
 {chr(10).join(links)}
-
-Қатаң ережелер:
-- Тек title, summary, tags, sources және links деректерін қолдан.
-- Full article text жүктеме, сұрама және ойдан қоспа.
-- Факт, есім, сан, цитата, орын немесе деталь ойдан шығарма.
-- Қазақша жаз; ағылшын title-ды қазақша табиғи тақырыпқа айналдыр.
-- 180-250 сөз аралығында жаз.
-- Қайталама, бір ойды екі рет айтпа.
-- Қажет жерде "шабуыл", "соққы", "зымыран", "дрон", "келіссөз", "уақытша бітім" сияқты нақты сөздерді қолдан.
-- Түсініксіз тіркес, калька және мағынасыз аударма қолданба.
-- "ұшқындар", "ғарыштық атқару", "шексіз күндері" сияқты мағынасыз тіркестерге тыйым салынады.
-- Дерек жетіспесе қысқа әрі сақ жаз.
-- Дереккөздер бөлімінде тек берілген source және url жұптарын көрсет.
-- YAML front matter қоспа; тек төмендегі Markdown body құрылымын жаз.
-
-Құрылым дәл осылай болсын:
-
-# [қазақша табиғи тақырып]
-
-**Лид:**
-2-3 сөйлем.
-
-**Не болды:**
-Қысқа түсіндіру.
-
-**Неге маңызды:**
-Геосаяси мәні.
-
-**Әрі қарай не күту керек:**
-Сақ, факт ойдан шығармайтын 1-2 абзац.
-
-**Дереккөздер:**
-
-* Source — URL
 """
 
 
@@ -214,22 +359,334 @@ def render_document(title: str, body: str, date: str, source_count: int, mode: s
     )
 
 
-def is_quality_article(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped or any(phrase in stripped.lower() for phrase in BANNED_PHRASES):
-        return False
-    required = ["# ", "**Лид:**", "**Не болды:**", "**Неге маңызды:**", "**Әрі қарай не күту керек:**", "**Дереккөздер:**"]
-    if not all(item in stripped for item in required):
-        return False
-    if "source + url" in stripped.lower() or "[қазақша" in stripped.lower():
-        return False
-    text_for_language = re.sub(r"https?://\S+", "", stripped)
+def parse_ai_article_json(raw_text: str) -> tuple[dict | None, str | None]:
+    stripped = strip_json_fences(raw_text.strip())
+    if not stripped:
+        return None, "json_parse_failed"
+
+    candidates = [stripped]
+    extracted = extract_json_object(stripped)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    data: dict | None = None
+    for candidate in candidates:
+        for normalized in (candidate, fix_loose_json(candidate)):
+            try:
+                parsed = json.loads(normalized)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                data = parsed
+                break
+        if data is not None:
+            break
+
+    if data is None:
+        return None, "json_parse_failed"
+
+    missing = [field for field in REQUIRED_JSON_FIELDS if field not in data]
+    if missing:
+        return None, "missing_json_fields"
+
+    sections: dict[str, str] = {}
+    for field in REQUIRED_JSON_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return None, "empty_json_field"
+        sections[field] = value.strip()
+
+    return sections, None
+
+
+def render_structured_article(title: str, sections: dict, cluster: dict) -> str:
+    return "\n".join(
+        [
+            f"# {title}",
+            "",
+            "**Лид:**",
+            sections["lead"],
+            "",
+            "**Не болды:**",
+            sections["what_happened"],
+            "",
+            "**Неге маңызды:**",
+            sections["why_important"],
+            "",
+            "**Әрі қарай не күту керек:**",
+            sections["what_next"],
+            "",
+            "**Дереккөздер:**",
+            "",
+            *format_sources(cluster),
+        ]
+    )
+
+
+def is_quality_structured_article(
+    sections: dict,
+    rendered: str,
+    ai_result: AITextResult,
+    cluster: dict,
+) -> tuple[bool, str | None, dict]:
+    quality_details = empty_quality_details(cluster)
+
+    if ai_result.finish_reason == "length" or ai_result.done_reason == "length":
+        quality_details["quality_checks"]["finish_reason_length"] = False
+        return False, "finish_reason_length", quality_details
+
+    combined = "\n\n".join(sections[field] for field in REQUIRED_JSON_FIELDS)
+    if not combined.strip():
+        quality_details["quality_checks"]["empty_response"] = False
+        return False, "empty_response", quality_details
+
+    for field in REQUIRED_JSON_FIELDS:
+        if len(sections[field]) < MIN_JSON_FIELD_CHARS:
+            quality_details["quality_checks"]["empty_json_field"] = False
+            quality_details["quality_error_sample"] = sections[field][:160]
+            return False, "empty_json_field", quality_details
+
+    if has_broken_markdown(rendered):
+        quality_details["quality_checks"]["markdown_broken"] = False
+        return False, "markdown_broken", quality_details
+
+    text_for_language = re.sub(r"https?://\S+", "", combined)
+    word_count = len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", text_for_language))
+    if word_count > 320:
+        quality_details["quality_checks"]["too_long"] = False
+        return False, "too_long", quality_details
+
+    accepted, reject_reason, section_details = is_good_kazakh_article_sections(sections, cluster)
+    quality_details.update(section_details)
+    if not accepted:
+        return False, reject_reason, quality_details
+
+    quality_details["quality_checks"]["accepted"] = True
+    return True, None, quality_details
+
+
+def is_good_kazakh_article_sections(
+    sections: dict,
+    cluster: dict,
+) -> tuple[bool, str | None, dict]:
+    combined = "\n\n".join(sections[field] for field in REQUIRED_JSON_FIELDS)
+    combined_lower = combined.lower()
+    event_keywords = extract_event_keywords(cluster)
+    quality_details = empty_quality_details(cluster, event_keywords=event_keywords)
+
+    for field in REQUIRED_JSON_FIELDS:
+        value = sections[field].strip()
+        if value.startswith(BULLET_FIELD_PREFIXES):
+            quality_details["quality_checks"]["bullet_text_in_json_field"] = False
+            quality_details["quality_error_sample"] = value[:160]
+            return False, "bullet_text_in_json_field", quality_details
+
+    bad_phrase = find_bad_kazakh_phrase(combined_lower)
+    if bad_phrase:
+        quality_details["quality_checks"]["bad_phrase"] = False
+        quality_details["bad_phrase_detected"] = bad_phrase
+        quality_details["quality_error_sample"] = combined[:160]
+        return False, "gibberish_text", quality_details
+
+    gibberish_match = find_gibberish_pattern(combined_lower)
+    if gibberish_match:
+        quality_details["quality_checks"]["gibberish_text"] = False
+        quality_details["quality_error_sample"] = gibberish_match[:160]
+        return False, "gibberish_text", quality_details
+
+    text_for_language = re.sub(r"https?://\S+", "", combined)
     cyrillic_count = len(re.findall(r"[А-Яа-яӘәҒғҚқҢңӨөҰұҮүҺһІі]", text_for_language))
     latin_count = len(re.findall(r"[A-Za-z]", text_for_language))
-    if cyrillic_count < 250 or cyrillic_count < latin_count:
-        return False
     word_count = len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", text_for_language))
-    return 120 <= word_count <= 320
+    quality_details["quality_checks"]["cyrillic_ratio"] = cyrillic_count >= 120 and cyrillic_count >= latin_count
+    quality_details["quality_checks"]["word_count"] = word_count >= 60
+    if cyrillic_count < 120 or cyrillic_count < latin_count or word_count < 60:
+        quality_details["quality_error_sample"] = combined[:160]
+        return False, "low_kazakh_quality", quality_details
+
+    overlap, matched_keywords = count_event_keyword_overlap(combined_lower, event_keywords)
+    quality_details["event_keyword_overlap"] = overlap
+    quality_details["quality_checks"]["event_keywords"] = overlap >= MIN_EVENT_KEYWORD_OVERLAP_REQUIRED
+    quality_details["matched_event_keywords"] = matched_keywords
+    if overlap < MIN_EVENT_KEYWORD_OVERLAP_REQUIRED:
+        quality_details["quality_error_sample"] = combined[:160]
+        return False, "event_not_mentioned", quality_details
+
+    if is_too_generic(combined_lower, overlap):
+        quality_details["quality_checks"]["too_generic"] = False
+        quality_details["quality_error_sample"] = combined[:160]
+        return False, "too_generic", quality_details
+
+    repeated, repeated_sample, repeated_count = find_repeated_phrase_detail(combined)
+    quality_details["repeated_phrase_sample"] = repeated_sample
+    quality_details["repeated_phrase_count"] = repeated_count
+    quality_details["quality_checks"]["repeated_phrases"] = not repeated
+    if repeated:
+        quality_details["quality_error_sample"] = repeated_sample or combined[:160]
+        return False, "repeated_phrases", quality_details
+
+    quality_details["quality_checks"]["accepted"] = True
+    return True, None, quality_details
+
+
+def empty_quality_details(cluster: dict, *, event_keywords: list[str] | None = None) -> dict:
+    keywords = event_keywords if event_keywords is not None else extract_event_keywords(cluster)
+    return {
+        "quality_checks": {},
+        "bad_phrase_detected": None,
+        "event_keyword_overlap": 0,
+        "expected_event_keywords": keywords[:12],
+        "matched_event_keywords": [],
+        "quality_error_sample": None,
+        "repeated_phrase_sample": None,
+        "repeated_phrase_count": 0,
+    }
+
+
+def find_bad_kazakh_phrase(text_lower: str) -> str | None:
+    for phrase in BAD_KAZAKH_PHRASES:
+        if phrase in text_lower:
+            return phrase
+    return None
+
+
+def find_gibberish_pattern(text_lower: str) -> str | None:
+    for pattern in GIBBERISH_PATTERNS:
+        match = re.search(pattern, text_lower, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return None
+
+
+def extract_event_keywords(cluster: dict) -> list[str]:
+    keywords: list[str] = []
+    seen: set[str] = set()
+
+    def add_keyword(keyword: str) -> None:
+        normalized = keyword.strip()
+        if len(normalized) < 2 or normalized in seen:
+            return
+        seen.add(normalized)
+        keywords.append(normalized)
+
+    topic = article_topic(cluster)
+    for keyword in TOPIC_KAZAKH_KEYWORDS.get(topic, TOPIC_KAZAKH_KEYWORDS["other"]):
+        add_keyword(keyword)
+
+    for tag in cluster.get("tags") or []:
+        for keyword in TAG_KAZAKH_KEYWORDS.get(tag, []):
+            add_keyword(keyword)
+
+    searchable_parts = [
+        str(cluster.get("title", "")),
+        str(cluster.get("summary", "")),
+        " ".join(cluster.get("sources") or []),
+    ]
+    for link in cluster.get("links") or []:
+        searchable_parts.append(str(link.get("title", "")))
+
+    searchable = " ".join(searchable_parts).lower()
+    for term, mapped_keywords in ENGLISH_TERM_KAZAKH.items():
+        if keyword_in_cluster_text(searchable, term):
+            for keyword in mapped_keywords:
+                add_keyword(keyword)
+
+    title_tokens = re.findall(r"[a-zа-яәғқңөұүһі0-9-]+", searchable)
+    for token in title_tokens:
+        if token in ENGLISH_TERM_KAZAKH:
+            for keyword in ENGLISH_TERM_KAZAKH[token]:
+                add_keyword(keyword)
+
+    return keywords
+
+
+def keyword_in_cluster_text(text: str, keyword: str) -> bool:
+    if " " in keyword:
+        return keyword in text
+    return re.search(rf"(?<![a-zа-яәғқңөұүһі0-9-]){re.escape(keyword)}(?![a-zа-яәғқңөұүһі0-9-])", text) is not None
+
+
+def count_event_keyword_overlap(text_lower: str, event_keywords: list[str]) -> tuple[int, list[str]]:
+    matched: list[str] = []
+    for keyword in event_keywords:
+        keyword_lower = keyword.lower()
+        if keyword_lower in text_lower:
+            matched.append(keyword)
+    return len(matched), matched
+
+
+def is_too_generic(text_lower: str, event_overlap: int) -> bool:
+    if any(phrase in text_lower for phrase in TOO_GENERIC_PHRASES):
+        return True
+    if event_overlap <= 1 and len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", text_lower)) < 80:
+        return True
+    return False
+
+
+def find_repeated_phrase_detail(text: str) -> tuple[bool, str | None, int]:
+    normalized = re.sub(r"\s+", " ", text.lower())
+    phrases = re.findall(
+        r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+(?:\s+[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+){3,}\b",
+        normalized,
+    )
+    seen: dict[str, int] = {}
+    for phrase in phrases:
+        key = phrase.strip(" .,:;!?")
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] >= 3:
+            return True, key, seen[key]
+
+    sentences = [part.strip() for part in re.split(r"[.!?。]+", normalized) if len(part.strip()) > 30]
+    sentence_counts: dict[str, int] = {}
+    for sentence in sentences:
+        sentence_counts[sentence] = sentence_counts.get(sentence, 0) + 1
+        if sentence_counts[sentence] >= 2:
+            return True, sentence, sentence_counts[sentence]
+    return False, None, 0
+
+
+def fix_loose_json(text: str) -> str:
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
+def strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def extract_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def clean_ai_article(text: str) -> str:
@@ -239,6 +696,137 @@ def clean_ai_article(text: str) -> str:
         if len(parts) == 3:
             stripped = parts[2].strip()
     return stripped
+
+
+def save_ai_debug(
+    index: int,
+    cluster: dict,
+    prompt: str,
+    ai_result: AITextResult,
+    *,
+    sections: dict | None,
+    rendered: str,
+    used_fallback: bool,
+    reject_reason: str | None,
+    json_parsed: bool,
+    quality_details: dict | None = None,
+) -> None:
+    decision = ai_decision_payload(
+        cluster,
+        ai_result,
+        sections=sections,
+        rendered=rendered,
+        used_fallback=used_fallback,
+        reject_reason=reject_reason,
+        json_parsed=json_parsed,
+        quality_details=quality_details,
+    )
+    write_ai_status(decision, ai_result)
+    if not debug_ai_articles():
+        return
+
+    folder = ai_debug_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    prefix = f"{index:02d}"
+    (folder / f"{prefix}_prompt.md").write_text(prompt, encoding="utf-8")
+    (folder / f"{prefix}_raw_response.md").write_text(ai_result.raw_response, encoding="utf-8")
+    (folder / f"{prefix}_parsed_sections.json").write_text(
+        json.dumps(sections or {}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (folder / f"{prefix}_rendered_article.md").write_text(rendered, encoding="utf-8")
+    (folder / f"{prefix}_decision.json").write_text(
+        json.dumps(decision, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (folder / "latest_status.json").write_text(
+        json.dumps(ai_status_payload(decision, ai_result), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def ai_decision_payload(
+    cluster: dict,
+    ai_result: AITextResult,
+    *,
+    sections: dict | None,
+    rendered: str,
+    used_fallback: bool,
+    reject_reason: str | None,
+    json_parsed: bool,
+    quality_details: dict | None = None,
+) -> dict:
+    details = quality_details or empty_quality_details(cluster)
+    payload = {
+        "provider": ai_result.provider,
+        "model": ai_result.model,
+        "ollama_available": ai_result.ollama_available,
+        "used_fallback": used_fallback,
+        "reject_reason": reject_reason,
+        "finish_reason": ai_result.finish_reason,
+        "done_reason": ai_result.done_reason,
+        "raw_length": len(ai_result.raw_response),
+        "rendered_length": len(rendered),
+        "json_parsed": json_parsed,
+        "fields": list(REQUIRED_JSON_FIELDS) if json_parsed and sections else [],
+        "cluster_title": str(cluster.get("title", "")),
+        "sources": list(cluster.get("sources", [])[:3]),
+        "debug_folder": str(ai_debug_dir()),
+        "rendered_preview": rendered[:1200] if debug_ai_articles() else "",
+        "quality_checks": details.get("quality_checks", {}),
+        "bad_phrase_detected": details.get("bad_phrase_detected"),
+        "event_keyword_overlap": details.get("event_keyword_overlap", 0),
+        "expected_event_keywords": details.get("expected_event_keywords", []),
+        "matched_event_keywords": details.get("matched_event_keywords", []),
+        "quality_error_sample": details.get("quality_error_sample"),
+        "repeated_phrase_sample": details.get("repeated_phrase_sample"),
+        "repeated_phrase_count": details.get("repeated_phrase_count", 0),
+    }
+    return payload
+
+
+def write_ai_status(decision: dict, ai_result: AITextResult) -> None:
+    path = ai_status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(ai_status_payload(decision, ai_result), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def ai_status_payload(decision: dict, ai_result: AITextResult) -> dict:
+    payload = dict(decision)
+    if debug_ai_articles():
+        payload["raw_preview"] = ai_result.raw_response[:1200]
+    else:
+        payload["raw_preview"] = ""
+        payload["rendered_preview"] = ""
+    return payload
+
+
+def debug_ai_articles() -> bool:
+    return os.getenv("DEBUG_AI_ARTICLES", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ai_debug_dir() -> Path:
+    return Path(os.getenv("OUTPUT_DIR", "output")) / "debug_ai" / today_str()
+
+
+def ai_status_path() -> Path:
+    return Path("data") / "ai_status.json"
+
+
+def has_broken_markdown(text: str) -> bool:
+    if text.count("```") % 2:
+        return True
+    if "<<<<<<<" in text or "=======" in text or ">>>>>>>" in text:
+        return True
+    return False
+
+
+def has_repeated_phrases(text: str) -> bool:
+    repeated, _, _ = find_repeated_phrase_detail(text)
+    return repeated
 
 
 def unique_filename(out_dir: Path, index: int, slug: str) -> str:

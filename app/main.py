@@ -195,7 +195,7 @@ def article(settings: dict, limit: int = 5, replace_today: bool = False) -> None
 
     saved_paths = []
     for index, cluster in enumerate(selected_clusters, start=1):
-        content, mode = generate_kazakh_article(cluster)
+        content, mode = generate_kazakh_article(cluster, index=index)
         if not content:
             print(f"[article] мақала мәтіні жасалмады: {cluster['title']}")
             continue

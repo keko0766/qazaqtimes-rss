@@ -25,6 +25,7 @@ from app.utils.datetime import today_str
 OUTPUT_DIR = PROJECT_ROOT / "output"
 DATA_DIR = PROJECT_ROOT / "data"
 OLLAMA_STATUS_PATH = DATA_DIR / "ollama_status.json"
+AI_STATUS_PATH = DATA_DIR / "ai_status.json"
 COMMANDS = {"collect", "report", "article", "all"}
 PRESETS = {"daily_articles"}
 MODES = {"fast", "normal"}
@@ -58,6 +59,7 @@ class JobState:
         ollama_state = ollama_status_snapshot(refresh=selected_provider == "ollama")
         lmstudio_ready = lmstudio_available(refresh=selected_provider == "lmstudio")
         with self.lock:
+            ai_status = {} if self.running else latest_ai_status()
             return {
                 "running": self.running,
                 "command": self.command,
@@ -85,6 +87,17 @@ class JobState:
                 "ollama_error": ollama_state["error"],
                 "lmstudio_available": lmstudio_ready,
                 "current_model": current_model(selected_provider),
+                "last_ai_provider": ai_status.get("provider", ""),
+                "last_ai_model": ai_status.get("model", ""),
+                "last_ai_used_fallback": ai_status.get("used_fallback"),
+                "last_ai_reject_reason": ai_status.get("reject_reason"),
+                "last_ai_json_parsed": ai_status.get("json_parsed"),
+                "last_ai_bad_phrase": ai_status.get("bad_phrase_detected"),
+                "last_ai_event_keyword_overlap": ai_status.get("event_keyword_overlap"),
+                "last_ai_quality_error_sample": ai_status.get("quality_error_sample"),
+                "last_ai_debug_folder": ai_status.get("debug_folder", ""),
+                "last_ai_raw_preview": ai_status.get("raw_preview", ""),
+                "last_ai_rendered_preview": ai_status.get("rendered_preview", ""),
             }
 
     def status_label(self) -> str:
@@ -419,9 +432,7 @@ def dict_env() -> dict[str, str]:
 
 def ai_environment(provider: str) -> dict[str, str]:
     if provider == "ollama":
-        if ollama_is_ready():
-            return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
-        return {"AI_PROVIDER": "none", "USE_OLLAMA": "false"}
+        return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
     if provider == "lmstudio":
         return {
             "AI_PROVIDER": "lmstudio",
@@ -537,6 +548,19 @@ def read_ollama_status_file() -> dict:
     except (OSError, json.JSONDecodeError):
         return {"state": "error", "message": "Ollama status оқылмады"}
     return data if isinstance(data, dict) else {}
+
+
+def latest_ai_status() -> dict:
+    for path in [AI_STATUS_PATH, OUTPUT_DIR / "debug_ai" / today_str() / "latest_status.json"]:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 def ollama_is_ready() -> bool:
@@ -823,6 +847,27 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 12px;
     }
+    .diag-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .diag-grid div { overflow-wrap: anywhere; }
+    .raw-preview {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 160px;
+      overflow: auto;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     .muted { color: var(--muted); }
     .results-head {
       display: flex;
@@ -964,6 +1009,22 @@ INDEX_HTML = r"""<!doctype html>
         <div id="lmNotice" class="notice">LM Studio табылмады, резерв шаблон қолданылды.</div>
         <div id="ollamaNotice" class="notice">Ollama дайын емес. Резерв шаблон қолданылды.</div>
       </div>
+      <details>
+        <summary>ИИ диагностика</summary>
+        <div class="diag-grid">
+          <div><strong>Current AI provider:</strong> <span id="diagProvider">-</span></div>
+          <div><strong>Ollama status:</strong> <span id="diagOllama">-</span></div>
+          <div><strong>Last generation mode:</strong> <span id="diagMode">-</span></div>
+          <div><strong>Last reject reason:</strong> <span id="diagReject">-</span></div>
+          <div><strong>Bad phrase:</strong> <span id="diagBadPhrase">-</span></div>
+          <div><strong>Event keyword overlap:</strong> <span id="diagEventOverlap">-</span></div>
+          <div><strong>JSON parsed:</strong> <span id="diagJsonParsed">-</span></div>
+          <div><strong>Last model:</strong> <span id="diagModel">-</span></div>
+          <div><strong>Debug folder path:</strong> <span id="diagFolder">-</span></div>
+        </div>
+        <pre id="diagRaw" class="raw-preview">Raw response preview тек DEBUG_AI_ARTICLES=true болса көрінеді.</pre>
+        <pre id="diagRendered" class="raw-preview">Rendered preview тек DEBUG_AI_ARTICLES=true болса көрінеді.</pre>
+      </details>
     </aside>
     <section>
       <div class="results-head">
@@ -1007,6 +1068,17 @@ INDEX_HTML = r"""<!doctype html>
     const mode = document.querySelector("#mode");
     const limit = document.querySelector("#limit");
     const aiProvider = document.querySelector("#aiProvider");
+    const diagProvider = document.querySelector("#diagProvider");
+    const diagOllama = document.querySelector("#diagOllama");
+    const diagMode = document.querySelector("#diagMode");
+    const diagReject = document.querySelector("#diagReject");
+    const diagBadPhrase = document.querySelector("#diagBadPhrase");
+    const diagEventOverlap = document.querySelector("#diagEventOverlap");
+    const diagJsonParsed = document.querySelector("#diagJsonParsed");
+    const diagModel = document.querySelector("#diagModel");
+    const diagFolder = document.querySelector("#diagFolder");
+    const diagRaw = document.querySelector("#diagRaw");
+    const diagRendered = document.querySelector("#diagRendered");
 
     async function getJSON(url, options) {
       const response = await fetch(url, options);
@@ -1054,6 +1126,7 @@ INDEX_HTML = r"""<!doctype html>
       lmNotice.style.display = status.lmstudio_fallback ? "block" : "none";
       ollamaNotice.style.display = status.ollama_fallback ? "block" : "none";
       renderAiStatus(status);
+      renderAiDiagnostics(status);
       renderArticles(status.latest_articles || []);
       renderDigest(status.latest_digest || {});
       return status;
@@ -1120,6 +1193,33 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       aiState.textContent = "ИИ: Қосылмаған";
+    }
+
+    function renderAiDiagnostics(status) {
+      diagProvider.textContent = status.ai_provider || "-";
+      const ollamaLabel = status.ollama_available ? "Дайын" : (status.ollama_loading ? "Дайындалып жатыр" : (status.ollama_status || "Қосылмаған"));
+      diagOllama.textContent = `${ollamaLabel}${status.ollama_status_message ? ` · ${status.ollama_status_message}` : ""}`;
+      if (status.last_ai_used_fallback === true) {
+        diagMode.textContent = "fallback";
+      } else if (status.last_ai_used_fallback === false) {
+        diagMode.textContent = "AI";
+      } else {
+        diagMode.textContent = "-";
+      }
+      diagReject.textContent = status.last_ai_reject_reason || "-";
+      diagBadPhrase.textContent = status.last_ai_bad_phrase || "-";
+      diagEventOverlap.textContent = status.last_ai_event_keyword_overlap ?? "-";
+      if (status.last_ai_json_parsed === true) {
+        diagJsonParsed.textContent = "true";
+      } else if (status.last_ai_json_parsed === false) {
+        diagJsonParsed.textContent = "false";
+      } else {
+        diagJsonParsed.textContent = "-";
+      }
+      diagModel.textContent = status.last_ai_model || status.current_model || "-";
+      diagFolder.textContent = status.last_ai_debug_folder || "output/debug_ai/YYYY-MM-DD/";
+      diagRaw.textContent = status.last_ai_raw_preview || "Raw response preview тек DEBUG_AI_ARTICLES=true болса көрінеді.";
+      diagRendered.textContent = status.last_ai_rendered_preview || "Rendered preview тек DEBUG_AI_ARTICLES=true болса көрінеді.";
     }
 
     function escapeHTML(value) {

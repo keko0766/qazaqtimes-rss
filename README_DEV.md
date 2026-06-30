@@ -230,6 +230,14 @@ Current job snapshot қайтарады. Ішінде:
 - `ollama_status_message`
 - `lmstudio_available`
 - `current_model`
+- `last_ai_provider`
+- `last_ai_model`
+- `last_ai_used_fallback`
+- `last_ai_reject_reason`
+- `last_ai_json_parsed`
+- `last_ai_debug_folder`
+- `last_ai_raw_preview`
+- `last_ai_rendered_preview`
 
 Ескі article файлдары негізгі экранда көрсетілмейді.
 
@@ -460,7 +468,7 @@ Default мәндер:
 
 Ортақ AI router.
 
-- `generate_article_text(prompt) -> tuple[str | None, str]`
+- `generate_article_text(prompt) -> AITextResult`
 - `selected_provider() -> str`
 
 Provider таңдау:
@@ -482,10 +490,11 @@ Provider таңдау:
 - `prepare_article_output(replace_today=False, date=None)`
 - `article_output_dir(article_date, replace_today=False)`
 - `build_prompt(cluster)`
+- `parse_ai_article_json(raw_text)`
+- `render_structured_article(title, sections, cluster)`
+- `is_quality_structured_article(sections, rendered, ai_result, cluster)`
+- `is_good_kazakh_article_sections(sections, cluster)`
 - `fallback_article(cluster)`
-- `render_document(title, body, date, source_count, mode)`
-- `is_quality_article(text)`
-- `clean_ai_article(text)`
 - `unique_filename(out_dir, index, slug)`
 - `title_fingerprint(cluster)`
 - `is_article_topic(cluster)`
@@ -519,6 +528,13 @@ Topic diversity limits:
 - `nato_eu`: 2
 - `china_taiwan`: 1
 - `other`: 1
+
+AI Kazakh quality guard (`is_good_kazakh_article_sections`):
+
+- JSON parse сәтті болса да pseudo-Kazakh / gibberish мәтін қабылданбайды.
+- Bad phrase, bullet-prefix (`- `, `• `), event keyword overlap (<2), repeated phrase және too generic checks бар.
+- Сапа тексерісінен өтпесе `reject_reason` `*_decision.json` ішінде (`gibberish_text`, `event_not_mentioned`, т.б.) жазылып, fallback template қолданылады.
+- Debug: `quality_checks`, `bad_phrase_detected`, `event_keyword_overlap`, `quality_error_sample`.
 
 ### `classifier.py`
 
@@ -615,8 +631,21 @@ Ollama provider.
 Defaults:
 
 - `OLLAMA_URL=http://ollama:11434`
-- `OLLAMA_MODEL=qwen2.5:3b`
+- `OLLAMA_MODEL=qwen2.5:3b` — default; Kazakh quality may be weak, many articles may fall back to template
 - `OLLAMA_TIMEOUT=180`
+
+Recommended models for Kazakh news writing:
+
+- `qwen2.5:3b` — works on modest hardware; Kazakh journalistic quality often insufficient
+- `qwen2.5:7b` — recommended balance of quality and resource use
+- `qwen2.5:14b` — best quality if hardware allows
+
+Article JSON generation options (sent in `/api/generate` payload):
+
+- `temperature`: 0.2
+- `top_p`: 0.8
+- `repeat_penalty`: 1.2
+- `num_predict`: 500
 
 Негізгі функциялар:
 
@@ -634,7 +663,18 @@ Text generation endpoint:
 POST {OLLAMA_URL}/api/generate
 ```
 
-Payload ішінде `stream: false`.
+Payload ішінде `stream: false` және article JSON options:
+
+```json
+{
+  "options": {
+    "temperature": 0.2,
+    "top_p": 0.8,
+    "repeat_penalty": 1.2,
+    "num_predict": 500
+  }
+}
+```
 
 ### `relevance.py`
 
@@ -904,11 +944,122 @@ Fallback:
 
 AI quality check:
 
-- Required headings бар болуы керек.
-- Banned phrases болмауы керек: `ұшқындар`, `ғарыштық атқару`, `шексіз күндері`.
+- AI модель толық Markdown жазбайды; тек JSON section content қайтарады.
+- App JSON-ды parse edip, Markdown құрылымын өзі render ededi.
+- JSON parse сәтті болса, барлық 4 өріс (`lead`, `what_happened`, `why_important`, `what_next`) бар және тым қысқа емес.
+- `finish_reason`/`done_reason` = `length` болса қабылданбайды.
+- Banned phrases болмауы керек.
 - Cyrillic/Kazakh мәтін жеткілікті болуы керек.
-- Word count шамамен 120-320 аралығы.
 - Сапасыз AI output болса fallback қолданылады.
+- Reject reason әрқашан log/debug status ішінде сақталады.
+
+### Structured JSON AI output
+
+AI енді толық Markdown мақала жазбайды. Ол тек мына JSON қайтарады:
+
+```json
+{
+  "lead": "...",
+  "what_happened": "...",
+  "why_important": "...",
+  "what_next": "..."
+}
+```
+
+App `parse_ai_article_json()` арқылы JSON-ды оқиды, `render_structured_article()` арқылы Markdown құрылымын өзі жасайды. Heading, дереккөз тізімі және `# тақырып` app кодында беріледі; модель тек section мәтінін жазады.
+
+Prompt тек cluster title, summary, tags, max 3 source және max 3 source title/URL қамтиды. Толық digest немесе ұзын unrelated context жіберілмейді. Prompt ішінде қысқа GOOD JSON мысалы бар — модель стильді еліктеуі керек, фактілерді емес.
+
+### AI article debug
+
+Қосу:
+
+```bash
+DEBUG_AI_ARTICLES=true AI_PROVIDER=ollama python app/main.py article --mode fast --limit 1 --replace-today
+```
+
+Default:
+
+```env
+DEBUG_AI_ARTICLES=false
+```
+
+Debug output:
+
+```text
+output/debug_ai/YYYY-MM-DD/
+├── 01_prompt.md
+├── 01_raw_response.md
+├── 01_parsed_sections.json
+├── 01_rendered_article.md
+├── 01_decision.json
+└── latest_status.json
+```
+
+`data/ai_status.json` әр generation сайын жазылады. GUI және `/api/status` соңғы AI күйін осы файлдан немесе `output/debug_ai/YYYY-MM-DD/latest_status.json` ішінен оқиды. Job жүріп тұрғанда GUI ескі AI diagnostics көрсетпейді.
+
+`01_decision.json` негізгі өрістері:
+
+```json
+{
+  "provider": "ollama",
+  "model": "qwen2.5:3b",
+  "used_fallback": false,
+  "reject_reason": null,
+  "raw_length": 1704,
+  "json_parsed": true,
+  "fields": ["lead", "what_happened", "why_important", "what_next"]
+}
+```
+
+`DEBUG_AI_ARTICLES=true` болса raw response ешқашан silent жоғалмайды: quality guard reject етсе де `*_raw_response.md` сақталады. Parsed sections `*_parsed_sections.json` ішінде, app render etken Markdown `*_rendered_article.md` ішінде сақталады. Paragraph break (`\n\n`) сақталады; whitespace collapse үшін `" ".join(text.split())` қолданылмайды.
+
+Reject reason meanings:
+
+- `json_parse_failed` — AI response ішінен JSON оқылмады.
+- `missing_json_fields` — `lead`, `what_happened`, `why_important`, `what_next` өрістерінің біреуі жоқ.
+- `empty_json_field` — JSON өрісі бос немесе тым қысқа.
+- `empty_response` — provider бос мәтін қайтарды.
+- `too_short` — section мәтіні сөз саны бойынша жеткіліксіз.
+- `too_long` — section мәтіні 320 сөзден көп.
+- `finish_reason_length` — provider output-ты length/truncation себебімен тоқтатты.
+- `repeated_phrases` — бір сөйлем/ұзын тіркес шамадан тыс қайталанды.
+- `banned_phrase` — banned nonsense phrase табылды.
+- `low_kazakh_text_ratio` — қазақ/кирилл мәтіні жеткіліксіз немесе latin үлесі көп.
+- `markdown_broken` — Markdown fence немесе merge marker сияқты broken белгі бар.
+- `ollama_not_ready` — Ollama `/api/tags` немесе generation endpoint қолжетімсіз.
+- `lmstudio_not_ready` — LM Studio `/models` немесе chat endpoint қолжетімсіз.
+- `provider_disabled` — `AI_PROVIDER=none` немесе provider таңдалмаған.
+
+Troubleshoot flow:
+
+1. `DEBUG_AI_ARTICLES=true` қойып бір мақала жаса.
+2. `output/debug_ai/YYYY-MM-DD/01_prompt.md` ішінде prompt JSON-only екенін және cluster title, summary, 3 source max, tags ғана барын тексер.
+3. `01_raw_response.md` ішінде AI нақты не қайтарғанын қара.
+4. `01_parsed_sections.json` ішінде parse edilgen section content-ті қара.
+5. `01_rendered_article.md` ішінде app render etken final Markdown-ды қара.
+6. `01_decision.json` ішінен `used_fallback`, `reject_reason`, `json_parsed`, `fields`, `raw_length` қара.
+7. `reject_reason=ollama_not_ready` болса `data/ollama_status.json`, `data/ollama_setup.log`, `docker compose --profile ollama exec ollama ollama list` тексер.
+8. `reject_reason=finish_reason_length` болса provider max output қысқа; бұл run fallback қолданады.
+9. `reject_reason=json_parse_failed` болса модель JSON орнына Markdown/түсіндіру жазған болуы мүмкін; fallback қолданылады.
+
+Article writer log үлгісі:
+
+```text
+[ai] provider=ollama model=qwen2.5:3b
+[ai] ollama available=true
+[ai] raw response length=1234
+[ai] json parsed=true
+[ai] quality accepted=true
+```
+
+Fallback болса:
+
+```text
+[ai] json parsed=false reason=json_parse_failed
+[ai] quality accepted=false reason=json_parse_failed
+[article] fallback қолданылды
+```
 
 ## 16. AI providers: none, LM Studio, Ollama
 
@@ -917,6 +1068,7 @@ Preferred env:
 ```env
 AI_PROVIDER=none
 # none | ollama | lmstudio
+DEBUG_AI_ARTICLES=false
 ```
 
 Compatibility env:
@@ -977,6 +1129,8 @@ OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL=qwen2.5:3b
 OLLAMA_TIMEOUT=180
 ```
+
+`qwen2.5:3b` default болса да, қазақша журналистикалық мәтін сапасы әлсіз болуы мүмкін — 3/3 fallback нормальды нәтиже. Жақсырақ сапа үшін `OLLAMA_MODEL=qwen2.5:7b` немесе `qwen2.5:14b` қолдан.
 
 Ollama endpoint:
 

@@ -7,3 +7,4 @@ data/*.log
 data/*.json
 output/*.md
 output/**/*.md
+output/debug_ai/

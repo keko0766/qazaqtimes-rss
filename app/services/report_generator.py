@@ -183,10 +183,10 @@ def build_draft_articles(clusters: list[dict]) -> list[str]:
 
     lines: list[str] = []
     for cluster in candidates:
-        ai_text, mode = generate_article_text(build_draft_prompt(cluster))
-        if ai_text:
-            print(f"[report] мақала жазу режимі={mode} тақырып='{cluster['title']}'")
-            lines.extend(ai_text.splitlines())
+        ai_result = generate_article_text(build_draft_prompt(cluster))
+        if ai_result.text and not ai_result.error_reason:
+            print(f"[report] мақала жазу режимі={ai_result.mode} тақырып='{cluster['title']}'")
+            lines.extend(ai_result.text.splitlines())
             lines.append("")
             continue
         print(f"[report] мақала жазу режимі=fallback тақырып='{cluster['title']}'")

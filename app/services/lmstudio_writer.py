@@ -5,6 +5,8 @@ import traceback
 
 import requests
 
+from app.services.ai_types import AITextResult
+
 
 DEFAULT_LMSTUDIO_URL = "http://host.docker.internal:1234/v1"
 DEFAULT_LMSTUDIO_MODEL = "model-identifier"
@@ -37,12 +39,18 @@ def is_available() -> bool:
 
 
 def generate_text(prompt: str) -> str | None:
+    result = generate_text_result(prompt)
+    return result.text if result.text and not result.error_reason else None
+
+
+def generate_text_result(prompt: str) -> AITextResult:
     global _available_cache
+    model = os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL)
     if not is_available():
-        return None
+        return AITextResult(provider="lmstudio", model=model, error_reason="lmstudio_not_ready")
 
     payload = {
-        "model": os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL),
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -61,15 +69,31 @@ def generate_text(prompt: str) -> str | None:
         response.raise_for_status()
         data = response.json()
         choice = data["choices"][0]
-        if choice.get("finish_reason") == "length":
-            return None
-        text = choice["message"]["content"]
+        finish_reason = choice.get("finish_reason")
+        text = str(choice["message"]["content"])
     except (KeyError, IndexError, TypeError, requests.RequestException, ValueError) as exc:
         log_unavailable(exc)
         _available_cache = False
-        return None
+        return AITextResult(
+            provider="lmstudio",
+            model=model,
+            error_reason="lmstudio_not_ready",
+            error=str(exc),
+        )
 
-    return str(text).strip() or None
+    error_reason = None
+    if finish_reason == "length":
+        error_reason = "finish_reason_length"
+    elif not text.strip():
+        error_reason = "empty_response"
+    return AITextResult(
+        provider="lmstudio",
+        model=model,
+        text=text.strip() or None,
+        raw_response=text,
+        finish_reason=str(finish_reason) if finish_reason else None,
+        error_reason=error_reason,
+    )
 
 
 def base_url() -> str:
