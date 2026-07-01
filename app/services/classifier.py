@@ -13,6 +13,46 @@ TAG_KEYWORDS = {
     "russia": ["russia", "russian", "moscow", "kremlin"],
     "ukraine": ["ukraine", "ukrainian", "kyiv", "kiev", "zelensky"],
     "china": ["china", "chinese", "beijing", "xi jinping"],
+    "china_influence": [
+        "china influence",
+        "chinese influence",
+        "influence operations",
+        "influence operation",
+        "economic coercion",
+        "coercion",
+        "coercive",
+        "pressure campaign",
+        "belt and road",
+        "bri ",
+    ],
+    "china_aggression": [
+        "china aggression",
+        "chinese aggression",
+        "military pressure",
+        "taiwan pressure",
+        "coercion",
+        "intimidation",
+        "harassment",
+    ],
+    "grey_zone": ["grey zone", "gray zone", "hybrid tactics", "cognitive warfare"],
+    "south_china_sea": ["south china sea", "spratly", "paracel", "scarborough shoal", "second thomas shoal"],
+    "belt_and_road": ["belt and road", "bri ", "silk road", "china-kazakhstan", "china kazakhstan"],
+    "central_asia": ["central asia", "central asian", "kazakhstan", "uzbekistan", "kyrgyzstan", "tajikistan", "turkmenistan"],
+    "kazakhstan": ["kazakhstan", "kazakh", "astana", "akorda"],
+    "kazakhstan_politics": [
+        "kazakhstan domestic politics",
+        "tokayev",
+        "akorda",
+        "kazakh government",
+        "kazakhstan government",
+        "kazakhstan parliament",
+        "mazhilis",
+        "majilis",
+        "senate of kazakhstan",
+        "cabinet",
+        "prime minister of kazakhstan",
+        "political reform",
+    ],
     "nato": ["nato", "alliance"],
     "eu": ["eu ", "european union", "european council", "brussels", "consilium"],
     "sanctions": ["sanction", "sanctions", "embargo", "blacklist"],
@@ -40,6 +80,12 @@ IMPORTANCE_3 = [
     "ceasefire",
     "troops",
     "strike",
+    "coercion",
+    "grey zone",
+    "gray zone",
+    "south china sea",
+    "tokayev",
+    "parliament",
 ]
 
 IMPORTANCE_2 = [
@@ -49,6 +95,9 @@ IMPORTANCE_2 = [
     "president",
     "warning",
     "agreement",
+    "government",
+    "parliament",
+    "coercion",
 ]
 
 
@@ -73,7 +122,21 @@ def find_tags(text: str) -> list[str]:
     for tag, keywords in TAG_KEYWORDS.items():
         if any(keyword_in_text(text, keyword) for keyword in keywords):
             tags.append(tag)
-    return tags
+    return refine_tags(tags, text)
+
+
+def refine_tags(tags: list[str], text: str) -> list[str]:
+    tag_set = set(tags)
+    china_pressure_tags = {"china_influence", "china_aggression", "grey_zone", "south_china_sea"}
+    has_china_context = bool(
+        tag_set & {"china", "taiwan", "south_china_sea", "belt_and_road"}
+        or keyword_in_text(text, "beijing")
+        or keyword_in_text(text, "taipei")
+        or keyword_in_text(text, "south china sea")
+    )
+    if not has_china_context:
+        tag_set -= china_pressure_tags
+    return [tag for tag in tags if tag in tag_set]
 
 
 def find_importance(text: str) -> int:

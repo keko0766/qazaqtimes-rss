@@ -24,6 +24,7 @@ geo-news-bot күнделікті геосаяси жаңалықтарды же
 - Автопубликация жоқ.
 - AI қолжетімсіз болса app құламайды, fallback мәтін жазады.
 - Docker default режимде Ollama image download/start жасамайды.
+- Daily article selection редакциялық 5 slot бойынша жүреді; жетпеген slot үшін fake мақала жасалмайды.
 
 ## 2. Негізгі user flow
 
@@ -177,6 +178,47 @@ Run modes:
 - `article(settings, limit, replace_today)` — DB-ден recent news алып cluster таңдайды, мақалаларды сақтайды.
 
 `all` командасы `collect` және `report` орындайды. `article` бөлек command, сондықтан GUI daily preset `all` кейін `article --replace-today` қосады.
+
+## 5.1. Редакциялық 5 slot
+
+`app/services/article_writer.py` article command үшін `select_editorial_article_clusters(clusters, limit=5)` қолданады. Күнделікті output мына slot-тарды ретімен толтыруға тырысады:
+
+1. `ukraine_russia` — Украина-Ресей
+2. `middle_east` — Таяу Шығыс
+3. `china_influence` — Қытайдың агрессиялық ықпалы
+4. `kazakhstan_domestic` — Қазақстанның ішкі саясаты
+5. `world_geopolitics` — Жалпы әлемдік геосаяси ахуал
+
+Әр slot үшін ең жақсы cluster `final_score`, `source_count`, `max_source_score` бойынша таңдалады. Selector rejected немесе weak aggregation title-дарды өткізбейді және title fingerprint duplicate болса, келесі кандидатқа өтеді. Slot табылмаса, log:
+
+```text
+[article] slot missing: china_influence
+```
+
+Бұл жағдайда fake мақала жасалмайды; saved article саны available slot санына тең болады. Article frontmatter ішінде slot metadata сақталады:
+
+```yaml
+slot: "china_influence"
+slot_label: "Қытайдың агрессиялық ықпалы"
+```
+
+GUI card осы `slot_label` мәнін көрсетеді. Digest ішінде `## Редакциялық 5 бағыт` бөлімі slot бойынша available summary жазады, missing бағыттарды бөлек белгілейді.
+
+China/Taiwan influence coverage үшін classifier tags:
+
+- `china_influence`
+- `china_aggression`
+- `grey_zone`
+- `south_china_sea`
+- `belt_and_road`
+- `central_asia`
+
+Kazakhstan domestic coverage үшін:
+
+- `kazakhstan`
+- `kazakhstan_politics`
+
+`sources.json` RSS үшін тек metadata feed-терді қолданады. Working RSS бар жерде RSS қосылады; Taiwan News, Taiwan Today және Taiwan MOFA сияқты RSS тұрақсыз немесе RSS емес endpoint болған жағдайда coverage GDELT query және domain allowlist арқылы жүреді. Full article scraping қосылмайды.
 
 ## 6. `app/web.py` GUI және API endpoints
 

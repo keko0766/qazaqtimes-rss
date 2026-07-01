@@ -21,6 +21,22 @@
       "url": "https://feeds.bbci.co.uk/news/world/rss.xml"
     },
     {
+      "name": "BBC Asia",
+      "url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml"
+    },
+    {
+      "name": "CNN World",
+      "url": "http://rss.cnn.com/rss/edition_world.rss"
+    },
+    {
+      "name": "CNN Asia",
+      "url": "http://rss.cnn.com/rss/edition_asia.rss"
+    },
+    {
+      "name": "Washington Post World",
+      "url": "https://feeds.washingtonpost.com/rss/world"
+    },
+    {
       "name": "Al Jazeera",
       "url": "https://www.aljazeera.com/xml/rss/all.xml"
     },
@@ -47,6 +63,17 @@
       "Russia Ukraine war",
       "USA Iran sanctions",
       "China Taiwan",
+      "China Taiwan military pressure",
+      "China grey zone Taiwan",
+      "China influence operations Central Asia",
+      "China economic coercion Asia",
+      "China South China Sea coercion",
+      "China Belt and Road Kazakhstan",
+      "Kazakhstan domestic politics",
+      "Kazakhstan Tokayev government parliament",
+      "domain:taiwannews.com.tw China Taiwan",
+      "domain:taiwantoday.tw China Taiwan",
+      "domain:en.mofa.gov.tw Taiwan China",
       "NATO Ukraine",
       "Middle East escalation",
       "Iran nuclear",

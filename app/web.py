@@ -675,9 +675,12 @@ def today_articles(limit: int = 5) -> list[dict]:
 def article_payload(path: Path) -> dict:
     text = read_text_preview(path, 5000)
     body = strip_front_matter(text)
+    metadata = article_front_matter(text)
     return {
         "path": str(path.relative_to(PROJECT_ROOT)),
-        "title": article_title(text, body),
+        "title": metadata.get("title") or article_title(text, body),
+        "slot": metadata.get("slot", ""),
+        "slot_label": metadata.get("slot_label", ""),
         "preview": markdown_preview(body, 700),
     }
 
@@ -705,6 +708,21 @@ def article_title(raw: str, body: str) -> str:
         if line.startswith("# "):
             return line[2:].strip()
     return "Мақала"
+
+
+def article_front_matter(raw: str) -> dict[str, str]:
+    if not raw.startswith("---"):
+        return {}
+    parts = raw.split("---", 2)
+    if len(parts) != 3:
+        return {}
+    metadata: dict[str, str] = {}
+    for line in parts[1].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        metadata[key.strip()] = value.strip().strip('"')
+    return metadata
 
 
 def open_today_folder() -> dict:
@@ -950,6 +968,20 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 12px;
       margin-bottom: 8px;
+    }
+    .slot-label {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      margin-bottom: 8px;
+      padding: 3px 7px;
+      border: 1px solid #b7d5cf;
+      border-radius: 999px;
+      background: #eef6f4;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
     }
     .preview {
       margin: 0 0 10px;
@@ -1202,6 +1234,7 @@ INDEX_HTML = r"""<!doctype html>
       articles.innerHTML = items.map((item, index) => `
         <article class="card">
           <h3>${escapeHTML(item.title || "Мақала")}</h3>
+          ${item.slot_label ? `<div class="slot-label">${escapeHTML(item.slot_label)}</div>` : ""}
           <div class="path">${escapeHTML(item.path)}</div>
           <p class="preview">${escapeHTML(item.preview || "")}</p>
           <div class="card-actions">
@@ -1213,14 +1246,16 @@ INDEX_HTML = r"""<!doctype html>
       articles.querySelectorAll("[data-copy]").forEach((button) => {
         button.addEventListener("click", async () => {
           const item = items[Number(button.dataset.copy)];
-          await navigator.clipboard.writeText(`${item.title}\n${item.path}\n\n${item.preview}`);
+          const slot = item.slot_label ? `${item.slot_label}\n` : "";
+          await navigator.clipboard.writeText(`${item.title}\n${slot}${item.path}\n\n${item.preview}`);
           button.textContent = "Көшірілді";
         });
       });
       articles.querySelectorAll("[data-view]").forEach((button) => {
         button.addEventListener("click", () => {
           const item = items[Number(button.dataset.view)];
-          viewer.textContent = `${item.path}\n\n${item.preview}`;
+          const slot = item.slot_label ? `${item.slot_label}\n` : "";
+          viewer.textContent = `${item.path}\n${slot}\n${item.preview}`;
           window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"});
         });
       });

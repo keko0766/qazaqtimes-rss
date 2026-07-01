@@ -27,7 +27,7 @@ from app.services.article_writer import (
     generate_kazakh_article,
     prepare_article_output,
     save_article,
-    select_article_clusters,
+    select_editorial_article_clusters,
 )
 from app.services.event_clusterer import cluster_events
 from app.services.relevance import filter_relevant_items
@@ -187,7 +187,7 @@ def article(settings: dict, limit: int = 5, replace_today: bool = False) -> None
     classified_items = classify_items(items)
     relevant_items = filter_relevant_items(classified_items)
     clusters = cluster_events(relevant_items)
-    selected_clusters = select_article_clusters(clusters, limit=limit)
+    selected_clusters = select_editorial_article_clusters(clusters, limit=limit)
     print(f"[article] мақалаға таңдалған оқиғалар: {len(selected_clusters)}")
     if not selected_clusters:
         print("[article] мақалаға лайық оқиға кластері табылмады")
@@ -206,6 +206,8 @@ def article(settings: dict, limit: int = 5, replace_today: bool = False) -> None
             mode=mode,
             source_count=int(cluster.get("source_count", 0)),
             replace_today=replace_today,
+            slot=cluster.get("slot"),
+            slot_label=cluster.get("slot_label"),
         )
         saved_paths.append(path)
         print(f"[article] сақталды: {path}")

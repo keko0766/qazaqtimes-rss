@@ -4,10 +4,22 @@ from collections import defaultdict
 from pathlib import Path
 
 from app.services.ai_writer import generate_article_text
+from app.services.article_writer import (
+    EDITORIAL_SLOTS,
+    editorial_score_key,
+    is_article_topic,
+    is_duplicate_fingerprint,
+    is_rejected_article_title,
+    is_weak_article_title,
+    slot_matches_cluster,
+    title_fingerprint,
+)
 from app.services.event_clusterer import cluster_events
 from app.services.ollama_writer import build_prompt as build_draft_prompt
 from app.services.topic_score import (
+    is_china_influence,
     is_china_taiwan,
+    is_kazakhstan_domestic,
     is_usa_iran,
     is_weak_gdelt_summary,
 )
@@ -17,6 +29,8 @@ from app.utils.datetime import today_str
 TOPIC_RULES = {
     "Ресей / Украина": {"russia", "ukraine"},
     "АҚШ / Иран": {"usa", "iran"},
+    "Қытай ықпалы / Тайвань қысымы": {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road", "china", "taiwan"},
+    "Қазақстан ішкі саясаты": {"kazakhstan", "kazakhstan_politics"},
     "Қытай / Тайвань": {"china", "taiwan"},
     "НАТО / ЕО": {"nato", "eu"},
     "Таяу Шығыс": {"middle_east", "iran", "israel", "gaza", "lebanon", "syria", "hormuz"},
@@ -39,6 +53,10 @@ def generate_report(items: list[dict], output_dir: str | Path) -> Path:
         "## Негізгі жаңалықтар",
         "",
         *build_headlines(top_clusters),
+        "",
+        "## Редакциялық 5 бағыт",
+        "",
+        *build_editorial_slot_sections(clusters),
         "",
         "## Басты оқиғалар",
         "",
@@ -83,6 +101,10 @@ def is_report_topic(cluster: dict) -> bool:
         return True
     if is_usa_iran(tags):
         return True
+    if is_china_influence(tags, text):
+        return True
+    if is_kazakhstan_domestic(tags, text):
+        return True
     if is_china_taiwan(tags, text):
         return True
     if tags & {"nato", "eu"}:
@@ -115,6 +137,44 @@ def build_top_events(clusters: list[dict]) -> list[str]:
     return lines
 
 
+def build_editorial_slot_sections(clusters: list[dict]) -> list[str]:
+    selected = select_report_editorial_slots(clusters)
+    by_slot = {cluster.get("slot"): cluster for cluster in selected}
+    lines: list[str] = []
+    for slot, label in EDITORIAL_SLOTS:
+        cluster = by_slot.get(slot)
+        if not cluster:
+            lines.append(f"- **{label}** — бұл бағытта жеткілікті күшті кластер табылмады.")
+            continue
+        sources = ", ".join(cluster["sources"][:3])
+        lines.append(f"- **{label}**: {cluster['title']} — {short_summary(cluster)}")
+        lines.append(f"  Дереккөздер: {sources}. Сілтемелер: {format_links(cluster, limit=2)}")
+    return lines
+
+
+def select_report_editorial_slots(clusters: list[dict]) -> list[dict]:
+    selected: list[dict] = []
+    fingerprints: list[set[str]] = []
+    for slot, label in EDITORIAL_SLOTS:
+        candidates = [
+            cluster
+            for cluster in clusters
+            if is_article_topic(cluster)
+            and slot_matches_cluster(slot, cluster)
+            and not is_rejected_article_title(cluster)
+            and not is_weak_article_title(cluster)
+            and not is_duplicate_fingerprint(title_fingerprint(cluster), fingerprints)
+        ]
+        if not candidates:
+            continue
+        cluster = dict(sorted(candidates, key=editorial_score_key, reverse=True)[0])
+        cluster["slot"] = slot
+        cluster["slot_label"] = label
+        selected.append(cluster)
+        fingerprints.append(title_fingerprint(cluster))
+    return selected
+
+
 def build_topic_sections(clusters: list[dict]) -> list[str]:
     grouped = group_clusters_by_topic(clusters)
     lines: list[str] = []
@@ -143,6 +203,10 @@ def group_clusters_by_topic(clusters: list[dict]) -> dict[str, list[dict]]:
             grouped["Ресей / Украина"].append(cluster)
         if is_usa_iran(tags):
             grouped["АҚШ / Иран"].append(cluster)
+        if is_china_influence(tags, text):
+            grouped["Қытай ықпалы / Тайвань қысымы"].append(cluster)
+        if is_kazakhstan_domestic(tags, text):
+            grouped["Қазақстан ішкі саясаты"].append(cluster)
         if is_china_taiwan(tags, text):
             grouped["Қытай / Тайвань"].append(cluster)
         if tags & {"nato", "eu"}:
@@ -238,6 +302,10 @@ def article_profile(cluster: dict) -> str:
         return "russia_ukraine"
     if is_usa_iran(tags):
         return "usa_iran"
+    if is_china_influence(tags, cluster_text(cluster)):
+        return "china_influence"
+    if is_kazakhstan_domestic(tags, cluster_text(cluster)):
+        return "kazakhstan_domestic"
     if is_china_taiwan(tags, cluster_text(cluster)):
         return "china_taiwan"
     if tags & {"nato", "eu"}:
@@ -257,6 +325,10 @@ def lead_text(profile: str, cluster: dict, summary: str) -> str:
         return f"{summary} Оқиғаның өзегінде келіссөздер, санкциялар, ядролық тақырып, Ормуз бұғазының қауіпсіздігі немесе аймақтағы АҚШ базалары тұр."
     if profile == "china_taiwan":
         return f"{summary} Бұл сюжет Тайвань маңындағы күш тепе-теңдігіне, технологиялық шектеулерге, саудаға немесе аймақтағы әскери қысымға қатысты."
+    if profile == "china_influence":
+        return f"{summary} Бұл сюжет Қытайдың Тайваньға, Орталық Азияға немесе теңіз дауларына қатысты қысым және ықпал құралдарын көрсетеді."
+    if profile == "kazakhstan_domestic":
+        return f"{summary} Бұл оқиға Қазақстандағы ішкі саяси шешімдерге, билік институттарына немесе реформалар күн тәртібіне қатысты."
     if profile == "nato_eu":
         return f"{summary} Мұнда одақтастардың үйлесімі, Еуропа қауіпсіздігі және НАТО немесе ЕО деңгейіндегі практикалық шешімдер сөз болып отыр."
     if profile == "sanctions":
@@ -273,6 +345,10 @@ def context_text(profile: str) -> str:
         return "АҚШ-Иран күн тәртібі үш түйінге тіреледі: ядролық шектеулер, санкциялық қысым және Парсы шығанағының қауіпсіздігі."
     if profile == "china_taiwan":
         return "Тайвань маңындағы шиеленіс көбіне әскери маневрлер, экспорттық шектеулер, жартылай өткізгіштер және АҚШ пен одақтастардың мәлімдемелері арқылы көрінеді."
+    if profile == "china_influence":
+        return "Қытай ықпалы әскери қысым, grey-zone тактикасы, экономикалық тәуелділік, Belt and Road жобалары және ақпараттық операциялар арқылы байқалады."
+    if profile == "kazakhstan_domestic":
+        return "Қазақстан ішкі саясаты президент әкімшілігі, үкімет, парламент және өңірлік басқару шешімдері арқылы бағаланады."
     if profile == "nato_eu":
         return "НАТО мен ЕО шешімдері қорғаныс жоспарлауына, Украинаға көмекке және одақтастар арасындағы жүктемені бөлуге рамка береді."
     if profile == "sanctions":
@@ -289,6 +365,10 @@ def importance_text(profile: str) -> str:
         return "АҚШ пен Иран арасындағы кез келген эскалация өңірлік базаларға соққы, келіссөздің үзілуі және жаңа санкция қаупін күшейтеді."
     if profile == "china_taiwan":
         return "Тайвань және технология тақырыбы Азия қауіпсіздігіне, чип жеткізу тізбектеріне және АҚШ-Қытай стратегиялық бәсекесіне әсер етеді."
+    if profile == "china_influence":
+        return "Бұл бағыт Азия қауіпсіздігіне, Орталық Азиядағы тәуелділік тәуекелдеріне және Қытайдың қысым құралдарына баға беруге маңызды."
+    if profile == "kazakhstan_domestic":
+        return "Ішкі саяси өзгерістер мемлекеттік басқару тұрақтылығына, реформалардың орындалуына және қоғаммен коммуникацияға әсер етеді."
     if profile == "nato_eu":
         return "Мұндай шешімдер батыс институттарының қорғаныс пен саяси қолдауды қаншалықты тез бейімдей алатынын көрсетеді."
     if profile == "sanctions":
@@ -305,6 +385,10 @@ def next_steps_text(profile: str) -> str:
         return "АҚШ, Иран, МАГАТЭ және шығанақ елдерінің мәлімдемелерін, сондай-ақ санкциялар мен келіссөздер туралы сигналдарды бақылау керек."
     if profile == "china_taiwan":
         return "Негізгі индикаторлар — Бейжің мен Тайбэйдің реакциясы, Вашингтон мәлімдемелері, экспорттық шаралар және флот не авиация белсенділігі."
+    if profile == "china_influence":
+        return "Әрі қарай Бейжіңнің мәлімдемелері, Тайвань маңындағы әскери белсенділік, Орталық Азия келісімдері және экономикалық қысым белгілері бақыланады."
+    if profile == "kazakhstan_domestic":
+        return "Әрі қарай Ақорда, үкімет, парламент және негізгі саяси акторлардың ресми шешімдері мен түсіндірмелері маңызды болады."
     if profile == "nato_eu":
         return "Келесі кезекте қаржыландыру бөлшектері, жеткізу мерзімдері, жекелеген елдердің ұстанымы және министрлер деңгейіндегі шешімдер маңызды болады."
     if profile == "sanctions":
@@ -318,8 +402,12 @@ def human_topic(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
     if {"russia", "ukraine"} <= tags:
         return "Ресей/Украина"
+    if is_china_influence(tags, cluster_text(cluster)):
+        return "Қытай ықпалы"
     if is_china_taiwan(tags, cluster_text(cluster)):
         return "Қытай/Тайвань"
+    if is_kazakhstan_domestic(tags, cluster_text(cluster)):
+        return "Қазақстан"
     if is_usa_iran(tags):
         return "АҚШ/Иран"
     if tags & {"nato", "eu"}:

@@ -8,10 +8,15 @@ ALLOWED_GDELT_DOMAINS = {
     "apnews.com",
     "bbc.com",
     "bbc.co.uk",
+    "cnn.com",
+    "edition.cnn.com",
+    "washingtonpost.com",
     "france24.com",
     "dw.com",
     "aljazeera.com",
     "theguardian.com",
+    "taiwannews.com.tw",
+    "taiwantoday.tw",
     "un.org",
     "news.un.org",
     "state.gov",
@@ -25,6 +30,15 @@ ALLOWED_GDELT_DOMAINS = {
     "kremlin.ru",
     "mid.ru",
     "fmprc.gov.cn",
+    "mofa.gov.tw",
+    "taiwan.gov.tw",
+    "akorda.kz",
+    "primeminister.kz",
+    "parlam.kz",
+    "parliament.kz",
+    "senate.parlam.kz",
+    "mazhilis.parlam.kz",
+    "gov.kz",
 }
 
 OFFICIAL_DOMAINS = {
@@ -41,6 +55,15 @@ OFFICIAL_DOMAINS = {
     "kremlin.ru",
     "mid.ru",
     "fmprc.gov.cn",
+    "mofa.gov.tw",
+    "taiwan.gov.tw",
+    "akorda.kz",
+    "primeminister.kz",
+    "parlam.kz",
+    "parliament.kz",
+    "senate.parlam.kz",
+    "mazhilis.parlam.kz",
+    "gov.kz",
 }
 
 
@@ -77,13 +100,13 @@ def source_score_for_item(item: dict) -> int:
         return 10
     if any(name in source for name in ("un news", "iaea", "nato")):
         return 10
-    if any(domain_matches(domain, good) for good in ("bbc.com", "bbc.co.uk", "dw.com", "france24.com")):
+    if any(domain_matches(domain, good) for good in ("bbc.com", "bbc.co.uk", "cnn.com", "dw.com", "france24.com", "washingtonpost.com")):
         return 8
-    if any(name in source for name in ("bbc", "deutsche welle", "france 24")):
+    if any(name in source for name in ("bbc", "cnn", "deutsche welle", "france 24", "washington post")):
         return 8
-    if any(domain_matches(domain, good) for good in ("aljazeera.com", "theguardian.com")):
+    if any(domain_matches(domain, good) for good in ("aljazeera.com", "theguardian.com", "taiwannews.com.tw", "taiwantoday.tw")):
         return 7
-    if any(name in source for name in ("al jazeera", "guardian")):
+    if any(name in source for name in ("al jazeera", "guardian", "taiwan news", "taiwan today")):
         return 7
     if is_gdelt_item(item) and is_allowed_gdelt_domain(domain):
         return 7

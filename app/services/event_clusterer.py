@@ -89,7 +89,21 @@ SIGNATURE_KEYWORDS = {
     "nato",
     "china",
     "taiwan",
+    "coercion",
+    "influence",
+    "grey",
+    "gray",
+    "zone",
+    "belt",
+    "road",
+    "belt_and_road",
+    "kazakhstan",
+    "tokayev",
+    "parliament",
+    "mazhilis",
+    "majilis",
     "missile",
+    "military",
     "troops",
 }
 
@@ -111,6 +125,10 @@ ALIASES = {
     "ukrainian": "ukraine",
     "israeli": "israel",
     "lebanese": "lebanon",
+    "chinese": "china",
+    "kazakh": "kazakhstan",
+    "grey": "gray",
+    "bri": "belt_and_road",
 }
 
 
@@ -229,6 +247,12 @@ def event_signature(tokens: set[str], tags: list[str]) -> set[str]:
         signature.add("israel_lebanon")
     if "russia" in signature and "ukraine" in signature and ({"attack", "strike", "missile"} & signature):
         signature.add("russia_ukraine_strikes")
+    if "china" in signature and "taiwan" in signature and ({"coercion", "gray", "zone", "military"} & signature):
+        signature.add("china_taiwan_pressure")
+    if "china" in signature and "kazakhstan" in signature and ({"belt", "road", "influence"} & signature):
+        signature.add("china_kazakhstan_influence")
+    if "kazakhstan" in signature and ({"tokayev", "parliament", "mazhilis", "majilis"} & signature):
+        signature.add("kazakhstan_politics")
     return signature
 
 
@@ -240,6 +264,9 @@ def strong_signature_match(left: set[str], right: set[str]) -> bool:
         "hormuz_evacuation",
         "israel_lebanon",
         "russia_ukraine_strikes",
+        "china_taiwan_pressure",
+        "china_kazakhstan_influence",
+        "kazakhstan_politics",
     }
     if shared & strong_markers:
         return True

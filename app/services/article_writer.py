@@ -51,6 +51,14 @@ TAG_KAZAKH_KEYWORDS = {
     "ukraine": ["Украина"],
     "china": ["Қытай"],
     "taiwan": ["Тайвань"],
+    "china_influence": ["Қытай", "Тайвань"],
+    "china_aggression": ["Қытай", "Тайвань"],
+    "grey_zone": ["Қытай", "Тайвань"],
+    "south_china_sea": ["Қытай", "Оңтүстік Қытай теңізі"],
+    "belt_and_road": ["Қытай", "Қазақстан"],
+    "central_asia": ["Орталық Азия"],
+    "kazakhstan": ["Қазақстан"],
+    "kazakhstan_politics": ["Қазақстан", "Тоқаев", "парламент"],
     "nato": ["НАТО"],
     "eu": ["ЕО", "Еуропа"],
     "middle_east": ["Таяу Шығыс", "Ормуз"],
@@ -72,6 +80,8 @@ TOPIC_KAZAKH_KEYWORDS = {
     "middle_east": ["Иран", "Израиль", "Ливан", "Ормуз", "соққы", "келіссөз"],
     "nato_eu": ["НАТО", "ЕО", "санкция", "қауіпсіздік"],
     "china_taiwan": ["Қытай", "Тайвань", "соққы"],
+    "china_influence": ["Қытай", "Тайвань", "қысым", "Орталық Азия", "Қазақстан"],
+    "kazakhstan_domestic": ["Қазақстан", "Тоқаев", "үкімет", "парламент"],
     "other": ["БҰҰ", "соққы", "келіссөз"],
 }
 
@@ -102,6 +112,21 @@ ENGLISH_TERM_KAZAKH = {
     "war": ["соғыс", "соққы"],
     "china": ["Қытай"],
     "taiwan": ["Тайвань"],
+    "chinese": ["Қытай"],
+    "beijing": ["Қытай"],
+    "taipei": ["Тайвань"],
+    "coercion": ["қысым"],
+    "coercive": ["қысым"],
+    "influence": ["ықпал"],
+    "grey": ["қысым"],
+    "gray": ["қысым"],
+    "belt": ["Қазақстан"],
+    "road": ["Қазақстан"],
+    "kazakhstan": ["Қазақстан"],
+    "kazakh": ["Қазақстан"],
+    "tokayev": ["Тоқаев"],
+    "parliament": ["парламент"],
+    "government": ["үкімет"],
     "nato": ["НАТО"],
     "lebanon": ["Ливан"],
     "israel": ["Израиль"],
@@ -117,6 +142,10 @@ REJECTED_TITLE_PATTERNS = {
     "liveblog",
     "briefing",
     "roundup",
+    "morning briefing",
+    "evening briefing",
+    "daily briefing",
+    "what to know",
     "opinion",
     "analysis video",
     "video only",
@@ -138,14 +167,139 @@ TOPIC_LIMITS = {
     "other": 1,
 }
 
+EDITORIAL_SLOTS = [
+    ("ukraine_russia", "Украина-Ресей"),
+    ("middle_east", "Таяу Шығыс"),
+    ("china_influence", "Қытайдың агрессиялық ықпалы"),
+    ("kazakhstan_domestic", "Қазақстанның ішкі саясаты"),
+    ("world_geopolitics", "Жалпы әлемдік геосаяси ахуал"),
+]
+
 
 def select_article_clusters(clusters: list[dict], limit: int = 5) -> list[dict]:
+    return select_editorial_article_clusters(clusters, limit=limit)
+
+
+def select_editorial_article_clusters(clusters: list[dict], limit: int = 5) -> list[dict]:
+    selected: list[dict] = []
+    fingerprints: list[set[str]] = []
+
+    for slot, slot_label in EDITORIAL_SLOTS[:limit]:
+        cluster = best_cluster_for_slot(clusters, slot, fingerprints)
+        if cluster is None:
+            print(f"[article] slot missing: {slot}")
+            continue
+        cluster_with_slot = dict(cluster)
+        cluster_with_slot["slot"] = slot
+        cluster_with_slot["slot_label"] = slot_label
+        selected.append(cluster_with_slot)
+        fingerprints.append(title_fingerprint(cluster))
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def best_cluster_for_slot(
+    clusters: list[dict],
+    slot: str,
+    selected_fingerprints: list[set[str]],
+) -> dict | None:
+    candidates = [
+        cluster
+        for cluster in clusters
+        if is_article_topic(cluster)
+        and slot_matches_cluster(slot, cluster)
+        and not is_rejected_article_title(cluster)
+        and not is_weak_article_title(cluster)
+        and not is_duplicate_fingerprint(title_fingerprint(cluster), selected_fingerprints)
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=editorial_score_key, reverse=True)[0]
+
+
+def editorial_score_key(cluster: dict) -> tuple[int, int, int]:
+    return (
+        int(cluster.get("final_score", 0)),
+        int(cluster.get("source_count", 0)),
+        int(cluster.get("max_source_score", cluster.get("source_score", 0))),
+    )
+
+
+def slot_matches_cluster(slot: str, cluster: dict) -> bool:
+    tags = set(cluster.get("tags") or [])
+    text = cluster_search_text(cluster)
+    if slot == "ukraine_russia":
+        return {"russia", "ukraine"} <= tags
+    if slot == "middle_east":
+        return bool(tags & {"middle_east", "iran", "israel", "gaza", "lebanon", "syria", "hormuz"})
+    if slot == "china_influence":
+        if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
+            return True
+        if {"china", "taiwan"} & tags and any(
+            keyword in text
+            for keyword in (
+                "taiwan strait",
+                "military pressure",
+                "grey zone",
+                "gray zone",
+                "coercion",
+                "coercive",
+                "pressure",
+                "security",
+                "warship",
+                "fighter jet",
+                "influence operation",
+                "influence operations",
+                "south china sea",
+                "belt and road",
+            )
+        ):
+            return True
+        return False
+    if slot == "kazakhstan_domestic":
+        if "kazakhstan_politics" in tags:
+            return True
+        return "kazakhstan" in tags and any(
+            keyword in text
+            for keyword in (
+                "tokayev",
+                "government",
+                "parliament",
+                "mazhilis",
+                "senate",
+                "minister",
+                "cabinet",
+                "domestic politics",
+                "political reform",
+            )
+        )
+    if slot == "world_geopolitics":
+        return not (
+            slot_matches_cluster("ukraine_russia", cluster)
+            or slot_matches_cluster("middle_east", cluster)
+            or slot_matches_cluster("china_influence", cluster)
+            or slot_matches_cluster("kazakhstan_domestic", cluster)
+        )
+    return False
+
+
+def cluster_search_text(cluster: dict) -> str:
+    parts = [str(cluster.get("title", "")), str(cluster.get("summary", ""))]
+    for link in cluster.get("links") or []:
+        parts.append(str(link.get("title", "")))
+        parts.append(str(link.get("source", "")))
+    return " ".join(parts).lower()
+
+
+def select_legacy_article_clusters(clusters: list[dict], limit: int = 5) -> list[dict]:
     selected: list[dict] = []
     fingerprints: list[set[str]] = []
     topic_counts: dict[str, int] = {}
 
     for cluster in sorted(clusters, key=lambda item: int(item.get("final_score", 0)), reverse=True):
-        if not is_article_topic(cluster) or is_rejected_article_title(cluster):
+        if not is_article_topic(cluster) or is_rejected_article_title(cluster) or is_weak_article_title(cluster):
             continue
         topic = article_topic(cluster)
         if topic_counts.get(topic, 0) >= TOPIC_LIMITS.get(topic, 1):
@@ -245,11 +399,13 @@ def save_article(
     source_count: int,
     replace_today: bool = False,
     date: str | None = None,
+    slot: str | None = None,
+    slot_label: str | None = None,
 ) -> Path:
     article_date = date or today_str()
     body = content.rstrip()
     article_title = extract_markdown_title(body) or title
-    document = render_document(article_title, body, article_date, source_count, mode)
+    document = render_document(article_title, body, article_date, source_count, mode, slot, slot_label)
 
     out_dir = article_output_dir(article_date, replace_today=replace_today)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,20 +505,28 @@ def fallback_article(cluster: dict) -> str:
     )
 
 
-def render_document(title: str, body: str, date: str, source_count: int, mode: str) -> str:
-    return "\n".join(
-        [
-            "---",
-            f'title: "{yaml_escape(title)}"',
-            f'date: "{date}"',
-            f"source_count: {source_count}",
-            f'mode: "{mode}"',
-            "---",
-            "",
-            body,
-            "",
-        ]
-    )
+def render_document(
+    title: str,
+    body: str,
+    date: str,
+    source_count: int,
+    mode: str,
+    slot: str | None = None,
+    slot_label: str | None = None,
+) -> str:
+    frontmatter = [
+        "---",
+        f'title: "{yaml_escape(title)}"',
+        f'date: "{date}"',
+        f"source_count: {source_count}",
+        f'mode: "{mode}"',
+    ]
+    if slot:
+        frontmatter.append(f'slot: "{yaml_escape(slot)}"')
+    if slot_label:
+        frontmatter.append(f'slot_label: "{yaml_escape(slot_label)}"')
+    frontmatter.extend(["---", "", body, ""])
+    return "\n".join(frontmatter)
 
 
 def parse_ai_article_json(raw_text: str) -> tuple[dict | None, str | None]:
@@ -876,7 +1040,29 @@ def is_article_topic(cluster: dict) -> bool:
         return True
     if {"china", "taiwan"} & tags:
         return True
-    if tags & {"nato", "eu", "sanctions", "nuclear", "hormuz", "middle_east", "israel", "gaza", "lebanon", "syria"}:
+    if tags & {
+        "nato",
+        "eu",
+        "sanctions",
+        "nuclear",
+        "hormuz",
+        "middle_east",
+        "israel",
+        "gaza",
+        "lebanon",
+        "syria",
+        "china_influence",
+        "china_aggression",
+        "grey_zone",
+        "south_china_sea",
+        "belt_and_road",
+        "kazakhstan_politics",
+    }:
+        return True
+    if "kazakhstan" in tags and any(
+        word in text
+        for word in ("tokayev", "government", "parliament", "mazhilis", "senate", "minister", "domestic politics")
+    ):
         return True
     country_terms = {
         "afghanistan",
@@ -899,14 +1085,46 @@ def is_rejected_article_title(cluster: dict) -> bool:
     return any(pattern in title for pattern in REJECTED_TITLE_PATTERNS)
 
 
+def is_weak_article_title(cluster: dict) -> bool:
+    title = str(cluster.get("title", "")).strip()
+    title_lower = title.lower()
+    if len(title) < 18:
+        return True
+    weak_prefixes = (
+        "photos:",
+        "video:",
+        "watch:",
+        "listen:",
+        "podcast:",
+        "live:",
+    )
+    if title_lower.startswith(weak_prefixes):
+        return True
+    weak_exact = {
+        "world",
+        "asia",
+        "china",
+        "taiwan",
+        "kazakhstan",
+        "middle east",
+        "latest news",
+        "breaking news",
+    }
+    return title_lower in weak_exact
+
+
 def article_topic(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
     if {"russia", "ukraine"} <= tags:
         return "russia_ukraine"
     if {"usa", "iran"} <= tags:
         return "usa_iran"
+    if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
+        return "china_influence"
     if {"china", "taiwan"} & tags:
         return "china_taiwan"
+    if "kazakhstan_politics" in tags:
+        return "kazakhstan_domestic"
     if tags & {"nato", "eu"}:
         return "nato_eu"
     if tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
@@ -948,7 +1166,11 @@ def kazakh_headline(cluster: dict) -> str:
             return "АҚШ пен Иран келіссөзі қайта назарда"
         return "АҚШ пен Иран арасындағы соққы мен келіссөз дауы"
     if {"china", "taiwan"} & tags:
+        if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
+            return "Қытай ықпалы мен Тайвань маңындағы қысым назарда"
         return "Қытай мен Тайвань маңындағы жағдай бақылауда"
+    if "kazakhstan_politics" in tags or ("kazakhstan" in tags and any(word in title for word in ["tokayev", "government", "parliament"])):
+        return "Қазақстан ішкі саясатындағы жаңа шешім назарда"
     if tags & {"nato", "eu"}:
         return "НАТО мен ЕО күн тәртібіндегі қауіпсіздік мәселесі"
     if tags & {"middle_east", "israel", "gaza", "lebanon", "syria", "hormuz"}:
@@ -966,6 +1188,10 @@ def importance_text(cluster: dict) -> str:
         return "Бұл бағыттағы өзгерістер Парсы шығанағы қауіпсіздігіне, келіссөз процесіне және энергетикалық маршруттарға әсер етуі мүмкін. Егер зымыран, дрон немесе теңіз жолдары туралы жаңа дерек шықса, аймақтық тәуекел қайта бағаланады."
     if {"russia", "ukraine"} <= tags:
         return "Бұл бағыттағы хабарлар соғыс динамикасына, инфрақұрылым қауіпсіздігіне және одақтастардың саяси шешімдеріне әсер етуі мүмкін. Қолда бар дерек шектеулі болса, редакциялық қорытындыны қосымша қолмен тексерген дұрыс."
+    if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"} or {"china", "taiwan"} & tags:
+        return "Бұл бағыт Қытайдың аймақтағы қысым құралдарын, Тайвань қауіпсіздігін және Орталық Азиядағы экономикалық-саяси ықпалын бағалауға маңызды. Ресми мәлімдемелер мен нақты әскери немесе экономикалық қадамдарды бөлек тексеру қажет."
+    if "kazakhstan_politics" in tags or "kazakhstan" in tags:
+        return "Қазақстан ішкі саясатындағы мұндай хабарлар мемлекеттік басқару, парламент жұмысы және реформалардың орындалуы тұрғысынан маңызды. Ақпаратты ресми дереккөздермен және бірнеше тәуелсіз хабармен салыстырып бағалау керек."
     if tags & {"nato", "eu"}:
         return "Мұндай оқиғалар қорғаныс жоспарлауына, одақтастардың үйлесіміне және саяси міндеттемелердің орындалуына қатысты. НАТО немесе ЕО деңгейіндегі шешімдер кейінгі әскери және дипломатиялық қадамдарға әсер етуі мүмкін."
     return "Оқиға халықаралық саясат, қауіпсіздік немесе дипломатиялық шешімдер контекстінде маңызды болуы мүмкін. Қолда бар дерек шектеулі болса, редакциялық қорытындыны қосымша қолмен тексерген дұрыс."
@@ -979,6 +1205,10 @@ def lead_text(cluster: dict, title: str, summary: str) -> str:
         return "АҚШ пен Иранға қатысты хабарлар шабуыл, соққы, келіссөз және Ормуз бұғазы қауіпсіздігі төңірегінде шоғырланып отыр. Қосымша мәлімет шектеулі болғандықтан, тараптардың ресми реакциясы маңызды."
     if {"russia", "ukraine"} <= tags:
         return "Ресей мен Украина бағытындағы хабарлар дрон, зымыран соққысы және инфрақұрылым қауіпсіздігі тақырыптарын қайта алға шығарды."
+    if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"} or {"china", "taiwan"} & tags:
+        return "Қытай мен Тайваньға немесе Қытайдың аймақтық ықпалына қатысты хабарлар әскери қысым, grey-zone тактикасы, теңіз даулары және экономикалық тәуелділік тақырыптарын алға шығарады."
+    if "kazakhstan_politics" in tags or "kazakhstan" in tags:
+        return "Қазақстанға қатысты хабар ішкі саяси шешімдер, үкімет жұмысы немесе парламент күн тәртібімен байланысты. Қосымша мәлімет шектеулі болса, ресми түсіндірме мен кейінгі реакцияны бақылау қажет."
     if tags & {"middle_east", "lebanon", "hormuz", "israel", "gaza"}:
         return "Таяу Шығыстағы соңғы хабарлар уақытша бітімнің беріктігі мен аймақтық қауіпсіздік тәуекелдерін көрсетеді. Дерек аз болса да, оқиға дипломатиялық күн тәртіппен тығыз байланысты."
     return "Қосымша мәлімет шектеулі, бірақ дереккөздер бұл оқиғаны маңызды халықаралық жаңалық ретінде беріп отыр."
@@ -992,6 +1222,10 @@ def what_happened_text(cluster: dict, title: str, summary: str) -> str:
         return "Дереккөздер АҚШ пен Иран арасындағы жаңа шиеленіс туралы хабарлады. Хабарларда соққы, келіссөздің тоқтауы немесе Ормуз бұғазы қауіпсіздігі сияқты тақырыптар қатар аталады. Қосымша мәлімет шектеулі, сондықтан нақты салдарын бөлек тексеру қажет."
     if {"russia", "ukraine"} <= tags:
         return "Дереккөздер Ресей-Украина бағытындағы әскери оқиға туралы хабарлады. Хабардың өзегінде дрон немесе зымыран соққысы, инфрақұрылым және соғыс динамикасы тұр. Толық көрініс үшін ресми тараптардың мәлімдемесін бақылау керек."
+    if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"} or {"china", "taiwan"} & tags:
+        return "Дереккөздер Қытайдың Тайваньға, теңіз аймақтарына немесе Орталық Азияға қатысты қысым және ықпал құралдары туралы хабарлады. Толық қорытынды жасау үшін Бейжің, Тайбэй және өңір үкіметтерінің ресми ұстанымын салыстыру керек."
+    if "kazakhstan_politics" in tags or "kazakhstan" in tags:
+        return "Дереккөздер Қазақстан ішкі саясатына қатысты жаңа хабар жариялады. Хабар үкімет, парламент немесе президент әкімшілігі деңгейіндегі шешімдермен байланысты болуы мүмкін, сондықтан нақты құжат пен ресми түсіндірмені бақылау қажет."
     if tags & {"middle_east", "lebanon", "hormuz", "israel", "gaza"}:
         return "Дереккөздер Таяу Шығыстағы қауіпсіздік ахуалы туралы хабарлады. Негізгі назар уақытша бітім, ықтимал соққы және теңіз жолдары қауіпсіздігіне ауып отыр. Қосымша мәлімет шектеулі болса, ақпаратты сақ бағалау қажет."
     return "Дереккөздер бұл оқиғаны халықаралық саясаттағы маңызды хабар ретінде берді. Қосымша мәлімет шектеулі, сондықтан ақпаратты сақ бағалау қажет."
@@ -1003,6 +1237,10 @@ def next_watch_text(cluster: dict) -> str:
         return "Әрі қарай АҚШ, Иран және өңір елдерінің ресми мәлімдемелері, келіссөз туралы сигналдар және Ормуз бұғазы маңындағы қауіпсіздік хабарлары маңызды болады."
     if {"russia", "ukraine"} <= tags:
         return "Әрі қарай соққы салдары, дрон немесе зымыран шабуылдары туралы ресми мәліметтер және одақтастардың реакциясы назарда болады."
+    if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"} or {"china", "taiwan"} & tags:
+        return "Әрі қарай Бейжің мен Тайбэйдің реакциясы, әскери белсенділік, санкциялық немесе экономикалық қысым белгілері және Орталық Азия үкіметтерінің ұстанымы бақыланады."
+    if "kazakhstan_politics" in tags or "kazakhstan" in tags:
+        return "Әрі қарай Ақорда, үкімет, парламент және негізгі саяси акторлардың ресми шешімдері мен түсіндірмелері маңызды болады."
     if tags & {"middle_east", "lebanon", "gaza", "israel"}:
         return "Әрі қарай уақытша бітімнің сақталуы, жаңа соққы туралы хабарлар және БҰҰ мен өңір үкіметтерінің мәлімдемелері бақыланады."
     return "Әрі қарай ресми мәлімдемелерді және негізгі тараптардың реакциясын салыстыру қажет. Нақты болжам жасау үшін қосымша расталған дерек керек."
