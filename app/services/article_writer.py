@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 from app.services.ai_types import (
     AI_ARTICLE_JSON_FIELDS,
@@ -21,6 +22,58 @@ MIN_JSON_FIELD_CHARS = 15
 MIN_EVENT_KEYWORD_OVERLAP_REQUIRED = MIN_EVENT_KEYWORD_OVERLAP
 
 BULLET_FIELD_PREFIXES = ("- ", "• ")
+REQUIRED_MARKDOWN_HEADINGS = (
+    "**Лид:**",
+    "**Не болды:**",
+    "**Неге маңызды:**",
+    "**Әрі қарай не күту керек:**",
+    "**Дереккөздер:**",
+)
+TECHNICAL_AI_TERMS = ("cluster", "metadata", "метадерек", "кластер")
+EXTRA_BAD_AI_PHRASES = (
+    "ұлттық одақ",
+    "оон",
+    "адамжарлық",
+    "азаматты қаза табады",
+    "шексіз күндері",
+    "ғарыштық атқару",
+    "ұшқындар",
+    "контекстінде қаралады",
+)
+GENERIC_FALLBACK_TITLES = {
+    "геосаяси оқиғаға қысқа шолу",
+    "ресей мен украина бағытындағы жаңа әскери оқиға",
+    "қазақстан ішкі саясатындағы жаңа шешім назарда",
+    "халықаралық саясаттағы жаңа хабар",
+    "жаңа шешім назарда",
+}
+BROKEN_FALLBACK_PHRASES = (
+    "деректеріне қарағанда, Қосымша",
+    "Ұлттық Одақ",
+    "адамжарлық",
+    "кластер",
+    "метадерек",
+)
+HEADING_ALIASES = {
+    "lead": {"лид", "кіріспе", "қысқаша", "бастысы", "негізгі ой"},
+    "what_happened": {"не болды", "оқиға", "оқиға барысы", "негізгі оқиға", "жағдай"},
+    "why_important": {"неге маңызды", "маңызы", "бұл неге маңызды", "неліктен маңызды"},
+    "what_next": {
+        "әрі қарай не күту керек",
+        "келесі қадам",
+        "бұдан кейін не болуы мүмкін",
+        "не күтіледі",
+        "алдағы жағдай",
+    },
+    "sources": {"дереккөздер", "дерек көздері", "ақпарат көздері", "sources"},
+}
+CANONICAL_HEADING_BY_FIELD = {
+    "lead": "**Лид:**",
+    "what_happened": "**Не болды:**",
+    "why_important": "**Неге маңызды:**",
+    "what_next": "**Әрі қарай не күту керек:**",
+    "sources": "**Дереккөздер:**",
+}
 
 GIBBERISH_PATTERNS = (
     r"\b\w*улу\b",
@@ -56,6 +109,7 @@ TAG_KAZAKH_KEYWORDS = {
     "grey_zone": ["Қытай", "Тайвань"],
     "south_china_sea": ["Қытай", "Оңтүстік Қытай теңізі"],
     "belt_and_road": ["Қытай", "Қазақстан"],
+    "tech_geopolitics": ["АҚШ", "Anthropic", "AI", "экспорт"],
     "central_asia": ["Орталық Азия"],
     "kazakhstan": ["Қазақстан"],
     "kazakhstan_politics": ["Қазақстан", "Тоқаев", "парламент"],
@@ -81,6 +135,7 @@ TOPIC_KAZAKH_KEYWORDS = {
     "nato_eu": ["НАТО", "ЕО", "санкция", "қауіпсіздік"],
     "china_taiwan": ["Қытай", "Тайвань", "соққы"],
     "china_influence": ["Қытай", "Тайвань", "қысым", "Орталық Азия", "Қазақстан"],
+    "tech_geopolitics": ["АҚШ", "Anthropic", "AI", "экспорт", "бақылау"],
     "kazakhstan_domestic": ["Қазақстан", "Тоқаев", "үкімет", "парламент"],
     "other": ["БҰҰ", "соққы", "келіссөз"],
 }
@@ -115,6 +170,12 @@ ENGLISH_TERM_KAZAKH = {
     "chinese": ["Қытай"],
     "beijing": ["Қытай"],
     "taipei": ["Тайвань"],
+    "anthropic": ["Anthropic"],
+    "ai": ["AI"],
+    "export": ["экспорт"],
+    "controls": ["бақылау"],
+    "chips": ["чип"],
+    "semiconductors": ["жартылай өткізгіш"],
     "coercion": ["қысым"],
     "coercive": ["қысым"],
     "influence": ["ықпал"],
@@ -170,6 +231,7 @@ TOPIC_LIMITS = {
 EDITORIAL_SLOTS = [
     ("ukraine_russia", "Украина-Ресей"),
     ("middle_east", "Таяу Шығыс"),
+    ("tech_geopolitics", "Технологиялық геосаясат"),
     ("china_influence", "Қытайдың агрессиялық ықпалы"),
     ("kazakhstan_domestic", "Қазақстанның ішкі саясаты"),
     ("world_geopolitics", "Жалпы әлемдік геосаяси ахуал"),
@@ -184,7 +246,7 @@ def select_editorial_article_clusters(clusters: list[dict], limit: int = 5) -> l
     selected: list[dict] = []
     fingerprints: list[set[str]] = []
 
-    for slot, slot_label in EDITORIAL_SLOTS[:limit]:
+    for slot, slot_label in EDITORIAL_SLOTS:
         cluster = best_cluster_for_slot(clusters, slot, fingerprints)
         if cluster is None:
             print(f"[article] slot missing: {slot}")
@@ -192,6 +254,8 @@ def select_editorial_article_clusters(clusters: list[dict], limit: int = 5) -> l
         cluster_with_slot = dict(cluster)
         cluster_with_slot["slot"] = slot
         cluster_with_slot["slot_label"] = slot_label
+        if is_kremlin_tokayev_event(cluster_with_slot):
+            cluster_with_slot["slot_label"] = "Қазақстан–Ресей"
         selected.append(cluster_with_slot)
         fingerprints.append(title_fingerprint(cluster))
         if len(selected) >= limit:
@@ -235,6 +299,8 @@ def slot_matches_cluster(slot: str, cluster: dict) -> bool:
     if slot == "middle_east":
         return bool(tags & {"middle_east", "iran", "israel", "gaza", "lebanon", "syria", "hormuz"})
     if slot == "china_influence":
+        if is_tech_geopolitics_cluster(cluster) and not china_is_main_actor(cluster):
+            return False
         if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
             return True
         if {"china", "taiwan"} & tags and any(
@@ -258,6 +324,8 @@ def slot_matches_cluster(slot: str, cluster: dict) -> bool:
         ):
             return True
         return False
+    if slot == "tech_geopolitics":
+        return is_tech_geopolitics_cluster(cluster)
     if slot == "kazakhstan_domestic":
         if "kazakhstan_politics" in tags:
             return True
@@ -280,9 +348,33 @@ def slot_matches_cluster(slot: str, cluster: dict) -> bool:
             slot_matches_cluster("ukraine_russia", cluster)
             or slot_matches_cluster("middle_east", cluster)
             or slot_matches_cluster("china_influence", cluster)
+            or slot_matches_cluster("tech_geopolitics", cluster)
             or slot_matches_cluster("kazakhstan_domestic", cluster)
         )
     return False
+
+
+def is_tech_geopolitics_cluster(cluster: dict) -> bool:
+    text = cluster_search_text(cluster)
+    return any(
+        keyword in text
+        for keyword in (
+            "us export controls",
+            "export controls",
+            "anthropic",
+            "ai models",
+            "powerful ai models",
+            "ai export",
+            "chips",
+            "semiconductors",
+            "semiconductor",
+        )
+    )
+
+
+def china_is_main_actor(cluster: dict) -> bool:
+    text = f"{cluster.get('title', '')} {cluster.get('summary', '')}".lower()
+    return any(keyword in text for keyword in ("china", "chinese", "beijing", "taiwan", "taipei", "қытай", "тайвань"))
 
 
 def cluster_search_text(cluster: dict) -> str:
@@ -291,6 +383,17 @@ def cluster_search_text(cluster: dict) -> str:
         parts.append(str(link.get("title", "")))
         parts.append(str(link.get("source", "")))
     return " ".join(parts).lower()
+
+
+def unique_values(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
 
 
 def select_legacy_article_clusters(clusters: list[dict], limit: int = 5) -> list[dict]:
@@ -333,10 +436,10 @@ def generate_kazakh_article(cluster: dict, index: int = 1) -> tuple[str | None, 
     print(f"[ai] raw response length={len(ai_result.raw_response)}")
 
     if reject_reason not in {"ollama_not_ready", "lmstudio_not_ready", "provider_disabled"}:
-        sections, parse_reason = parse_ai_article_json(raw_text)
+        sections, parse_reason = parse_ai_article_markdown(raw_text, cluster)
         if sections:
-            json_parsed = True
-            print("[ai] json parsed=true")
+            parse_warnings = list(sections.get("_warnings", []))
+            print("[ai] markdown parsed=true")
             rendered = render_structured_article(kazakh_headline(cluster), sections, cluster)
             if not reject_reason:
                 accepted, reject_reason, quality_details = is_quality_structured_article(
@@ -345,15 +448,23 @@ def generate_kazakh_article(cluster: dict, index: int = 1) -> tuple[str | None, 
                     ai_result,
                     cluster,
                 )
+                quality_details.setdefault("warnings", [])
+                quality_details["warnings"] = unique_values([*parse_warnings, *quality_details["warnings"]])
         else:
-            print(f"[ai] json parsed=false reason={parse_reason}")
+            print(f"[ai] markdown parsed=false reason={parse_reason}")
             if not reject_reason:
                 reject_reason = parse_reason
 
     if accepted:
         reject_reason = None
 
-    print(f"[ai] quality accepted={str(accepted).lower()}" + (f" reason={reject_reason}" if reject_reason else ""))
+    warnings = quality_details.get("warnings", []) if quality_details else []
+    warning_text = f" warnings={','.join(warnings)}" if accepted and warnings else ""
+    print(
+        f"[ai] quality accepted={str(accepted).lower()}"
+        + (f" reason={reject_reason}" if reject_reason else "")
+        + warning_text
+    )
 
     if accepted:
         print(f"[article] жазу режимі: {ai_result.provider}")
@@ -372,7 +483,7 @@ def generate_kazakh_article(cluster: dict, index: int = 1) -> tuple[str | None, 
         return rendered, ai_result.provider
 
     if raw_text.strip():
-        print(f"[article] AI мәтіні сапа тексерісінен өтпеді; reason={reject_reason}")
+        print(f"[article] AI мәтіні қолданылмады, fallback; reason={reject_reason}")
     print("[article] жазу режимі: fallback")
     print("[article] fallback қолданылды")
     save_ai_debug(
@@ -436,58 +547,59 @@ def build_prompt(cluster: dict) -> str:
         if link.get("url")
     ]
     sources = ", ".join(cluster.get("sources", [])[:3])
-    tags = ", ".join(tag for tag in cluster.get("tags", []) if tag != "untagged")
+    return f"""Қазақша түсінікті draft жаз. Қысқа жаңалық мақаласы керек: 180-260 сөз.
 
-    return f"""Тек JSON қайтар. Markdown, code block, түсіндіру немесе JSON алдында/кейін мәтін жоқ.
+Тек берілген тақырып, түйін, дереккөз атауы және сілтемелерді қолдан.
+Ойдан факт қоспа. Нақты сан, адам шығыны, дата, тараптың айыптауы, келісім немесе шабуыл нәтижесі тек input ішінде анық болса ғана жаз.
+Әртүрлі source-тағы бөлек оқиғаларды бір факт ретінде біріктірме.
+Title қазақша болсын. English title-ды сол күйі көшірме.
+Техникалық сөз қолданба: cluster, metadata, метадерек, кластер.
+Қолданба: Ұлттық Одақ, ООН, адамжарлық, метадерек, кластер.
+Markdown ғана қайтар. Қосымша түсіндірме, JSON немесе code block жазба.
 
-Формат:
-{{
-"lead": "...",
-"what_happened": "...",
-"why_important": "...",
-"what_next": "..."
-}}
+Glossary:
+- United Nations / UN = БҰҰ
+- humanitarian toll = гуманитарлық салдар / адам шығыны
+- civilians = бейбіт тұрғындар
+- energy sector / power industry = энергетика саласы / энергетикалық инфрақұрылым
+- strikes = соққылар / шабуылдар
 
-Мысал (стильді көшір, фактілерді емес):
-{{
-"lead": "Reuters деректеріне қарағанда, Украинада энергетика нысандарына дрон соққысы тіркелді. Оқиға Ресей мен Украина арасындағы соғыс динамикасына қатысты.",
-"what_happened": "Дереккөздер энергетика инфрақұрылымына бағытталған шабуыл туралы хабарлады. Ресей мен Украина тараптардың ресми мәлімдемелері әлі толық расталмады.",
-"why_important": "Энергетика нысандарына соққы инфрақұрылым қауіпсіздігіне және одақтастардың саяси шешімдеріне әсер етуі мүмкін.",
-"what_next": "Әрі қарай Ресей мен Украина тараптардың ресми мәлімдемелері мен соққы салдары туралы деректер бақыланады."
-}}
+Бөлім атауларын дәл осылай жаз:
 
-Ережелер:
-- Қарапайым журналистикалық қазақ тілінде жаз; мысалдағы стильді елікте, фактілерді көшірме.
-- Тақырыптағы негізгі актерлерді (ел, ұйым, тарап) міндетті түрде ата.
-- Әр JSON өрісі нақты осы оқиға туралы болсын; жалпы сөздерден аулақ бол.
-- Әр өріс — 1-2 қысқа сөйлем, bullet (-, •) қолданба.
-- Қырғыз сөздерін қолданба, ерекше сөз ойлап табпа.
-- Факт, сан, есім, цитата ойдан шығарма; дерек аз болса, сақ тұжырым қолдан.
-- Дереккөз тізімін, тақырып немесе heading жазба.
-- Тек JSON қайтар.
+# Тақырып
 
-Cluster title: {cluster.get("title", "")}
-Summary: {cluster.get("summary", "")}
-Tags: {tags}
-Sources: {sources}
-Source links:
+**Лид:**
+
+**Не болды:**
+
+**Неге маңызды:**
+
+**Әрі қарай не күту керек:**
+
+**Дереккөздер:**
+
+Берілген тақырып: {cluster.get("title", "")}
+Берілген түйін: {cluster.get("summary", "")}
+Дереккөздер: {sources}
+Сілтемелер:
 {chr(10).join(links)}
 """
 
 
 def fallback_article(cluster: dict) -> str:
     original_title = str(cluster.get("title") or "Геосаяси оқиға").strip()
-    headline = kazakh_headline(cluster)
+    headline = event_based_title(cluster)
     sources = natural_sources(cluster)
     summary = usable_summary(cluster)
-    what_happened = what_happened_text(cluster, original_title, summary)
+    event_sentence = safe_event_sentence(headline)
+    what_happened = fallback_what_happened(cluster, summary)
 
-    return "\n".join(
+    article = "\n".join(
         [
             f"# {headline}",
             "",
             "**Лид:**",
-            f"{sources} деректеріне қарағанда, {lead_text(cluster, original_title, summary)}",
+            f"{sources} дерегінше, {event_sentence}.",
             "",
             "**Не болды:**",
             what_happened,
@@ -503,6 +615,8 @@ def fallback_article(cluster: dict) -> str:
             *format_sources(cluster),
         ]
     )
+    validate_fallback_article(cluster, article)
+    return article
 
 
 def render_document(
@@ -527,6 +641,152 @@ def render_document(
         frontmatter.append(f'slot_label: "{yaml_escape(slot_label)}"')
     frontmatter.extend(["---", "", body, ""])
     return "\n".join(frontmatter)
+
+
+def parse_ai_article_markdown(raw_text: str, cluster: dict) -> tuple[dict | None, str | None]:
+    stripped = clean_ai_article(strip_json_fences(raw_text.strip()))
+    if not stripped:
+        return None, "empty_response"
+    if stripped.startswith("{"):
+        return None, "markdown_parse_failed"
+
+    lines = stripped.splitlines()
+    warnings: list[str] = []
+    title, title_index = extract_ai_title(lines, cluster)
+    fatal_reason = "english_title" if is_mostly_english_title(title, cluster) else None
+    title, title_warnings = normalize_ai_title(title, cluster)
+    warnings.extend(title_warnings)
+    heading_positions: list[tuple[str, int, bool]] = []
+    seen_fields: set[str] = set()
+    for index, line in enumerate(lines):
+        field, normalized = normalize_heading_line(line)
+        if field and field not in seen_fields:
+            heading_positions.append((field, index, normalized))
+            seen_fields.add(field)
+
+    if heading_positions:
+        if any(normalized for _, _, normalized in heading_positions):
+            warnings.append("headings_normalized")
+        sections: dict[str, Any] = {"title": title, "_warnings": warnings}
+        if fatal_reason:
+            sections["_fatal_reason"] = fatal_reason
+        ordered = sorted(heading_positions, key=lambda item: item[1])
+        for position, (field, index, _) in enumerate(ordered):
+            start = index + 1
+            end = ordered[position + 1][1] if position + 1 < len(ordered) else len(lines)
+            value = "\n".join(line.strip() for line in lines[start:end]).strip()
+            if field != "sources":
+                sections[field] = clean_section_text(value)
+
+        missing = [field for field in REQUIRED_JSON_FIELDS if not sections.get(field)]
+        if not missing and title_index <= ordered[0][1]:
+            if [field for field, _, _ in ordered[:5]] != list(CANONICAL_HEADING_BY_FIELD):
+                warnings.append("headings_normalized")
+            sections["_warnings"] = unique_values(warnings)
+            return sections, None
+
+    wrapped = auto_wrap_ai_article(stripped, title, cluster)
+    if wrapped:
+        wrapped["_warnings"] = unique_values([*warnings, "auto_wrapped_missing_headings"])
+        if fatal_reason:
+            wrapped["_fatal_reason"] = fatal_reason
+        return wrapped, None
+
+    return None, "empty_response"
+
+
+def extract_ai_title(lines: list[str], cluster: dict) -> tuple[str, int]:
+    for index, line in enumerate(lines):
+        clean_line = line.strip()
+        if clean_line.startswith("# "):
+            title = clean_line[2:].strip()
+            if title and title.lower() not in {"тақырып", "[қысқа тақырып]", "қысқа тақырып"}:
+                return title, index
+    return event_based_title(cluster), 0
+
+
+def normalize_ai_title(title: str, cluster: dict) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    original_title = str(cluster.get("title") or "").strip().lower()
+    latin_count = len(re.findall(r"[A-Za-z]", title))
+    cyrillic_count = len(re.findall(r"[А-Яа-яӘәҒғҚқҢңӨөҰұҮүҺһІі]", title))
+    if latin_count > cyrillic_count or title.strip().lower() == original_title:
+        title = event_based_title(cluster)
+        warnings.append("event_title_paraphrased")
+    return title, warnings
+
+
+def is_mostly_english_title(title: str, cluster: dict) -> bool:
+    title = title.strip()
+    if not title:
+        return False
+    original_title = str(cluster.get("title") or "").strip().lower()
+    latin_count = len(re.findall(r"[A-Za-z]", title))
+    cyrillic_count = len(re.findall(r"[А-Яа-яӘәҒғҚқҢңӨөҰұҮүҺһІі]", title))
+    if title.lower() == original_title and latin_count > 0:
+        return True
+    return latin_count >= 12 and latin_count > cyrillic_count * 2
+
+
+def normalize_heading_line(line: str) -> tuple[str | None, bool]:
+    cleaned = re.sub(r"^[#>\-\*\s]+", "", line.strip())
+    cleaned = cleaned.replace("*", "").strip()
+    cleaned = cleaned.rstrip(":：").strip().lower()
+    if not cleaned:
+        return None, False
+    for field, aliases in HEADING_ALIASES.items():
+        if cleaned in aliases:
+            canonical = CANONICAL_HEADING_BY_FIELD[field].replace("*", "").rstrip(":").lower()
+            return field, cleaned != canonical
+    return None, False
+
+
+def clean_section_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    cleaned = []
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+def auto_wrap_ai_article(text: str, title: str, cluster: dict) -> dict | None:
+    body = re.sub(r"^# .*$", "", text, count=1, flags=re.MULTILINE).strip()
+    body = remove_known_heading_lines(body)
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", body) if paragraph.strip()]
+    paragraphs = [paragraph for paragraph in paragraphs if not looks_like_source_list(paragraph)]
+    if not paragraphs:
+        return None
+    combined = "\n\n".join(paragraphs)
+    word_count = len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", combined))
+    if word_count < 35:
+        return None
+    lead = paragraphs[0]
+    what_happened = "\n\n".join(paragraphs[1:3]).strip() or safe_event_sentence(title)
+    return {
+        "title": title or event_based_title(cluster),
+        "lead": lead,
+        "what_happened": what_happened,
+        "why_important": importance_text(cluster),
+        "what_next": next_watch_text(cluster),
+    }
+
+
+def remove_known_heading_lines(text: str) -> str:
+    kept = []
+    for line in text.splitlines():
+        if normalize_heading_line(line)[0]:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def looks_like_source_list(paragraph: str) -> bool:
+    lower = paragraph.lower()
+    return lower.startswith(("дереккөз", "дерек көз", "ақпарат көз", "sources")) or "http://" in lower or "https://" in lower
 
 
 def parse_ai_article_json(raw_text: str) -> tuple[dict | None, str | None]:
@@ -570,9 +830,10 @@ def parse_ai_article_json(raw_text: str) -> tuple[dict | None, str | None]:
 
 
 def render_structured_article(title: str, sections: dict, cluster: dict) -> str:
+    article_title = str(sections.get("title") or title).strip()
     return "\n".join(
         [
-            f"# {title}",
+            f"# {article_title}",
             "",
             "**Лид:**",
             sections["lead"],
@@ -600,6 +861,11 @@ def is_quality_structured_article(
     cluster: dict,
 ) -> tuple[bool, str | None, dict]:
     quality_details = empty_quality_details(cluster)
+    fatal_reason = sections.get("_fatal_reason")
+    if fatal_reason:
+        quality_details["quality_checks"][fatal_reason] = False
+        quality_details["quality_error_sample"] = str(sections.get("title") or "")[:160]
+        return False, str(fatal_reason), quality_details
 
     if ai_result.finish_reason == "length" or ai_result.done_reason == "length":
         quality_details["quality_checks"]["finish_reason_length"] = False
@@ -623,8 +889,7 @@ def is_quality_structured_article(
     text_for_language = re.sub(r"https?://\S+", "", combined)
     word_count = len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", text_for_language))
     if word_count > 320:
-        quality_details["quality_checks"]["too_long"] = False
-        return False, "too_long", quality_details
+        quality_details.setdefault("warnings", []).append("needs_editorial_cleanup")
 
     accepted, reject_reason, section_details = is_good_kazakh_article_sections(sections, cluster)
     quality_details.update(section_details)
@@ -643,13 +908,13 @@ def is_good_kazakh_article_sections(
     combined_lower = combined.lower()
     event_keywords = extract_event_keywords(cluster)
     quality_details = empty_quality_details(cluster, event_keywords=event_keywords)
+    warnings: list[str] = list(sections.get("_warnings", []))
 
     for field in REQUIRED_JSON_FIELDS:
         value = sections[field].strip()
         if value.startswith(BULLET_FIELD_PREFIXES):
-            quality_details["quality_checks"]["bullet_text_in_json_field"] = False
-            quality_details["quality_error_sample"] = value[:160]
-            return False, "bullet_text_in_json_field", quality_details
+            warnings.append("needs_editorial_cleanup")
+            sections[field] = value.lstrip("-• ").strip()
 
     bad_phrase = find_bad_kazakh_phrase(combined_lower)
     if bad_phrase:
@@ -657,6 +922,12 @@ def is_good_kazakh_article_sections(
         quality_details["bad_phrase_detected"] = bad_phrase
         quality_details["quality_error_sample"] = combined[:160]
         return False, "gibberish_text", quality_details
+
+    technical_term = find_technical_ai_term(combined_lower)
+    if technical_term:
+        quality_details["quality_checks"]["technical_terms"] = False
+        quality_details["quality_error_sample"] = technical_term
+        return False, "technical_terms", quality_details
 
     gibberish_match = find_gibberish_pattern(combined_lower)
     if gibberish_match:
@@ -668,24 +939,33 @@ def is_good_kazakh_article_sections(
     cyrillic_count = len(re.findall(r"[А-Яа-яӘәҒғҚқҢңӨөҰұҮүҺһІі]", text_for_language))
     latin_count = len(re.findall(r"[A-Za-z]", text_for_language))
     word_count = len(re.findall(r"\b[\wӘәҒғҚқҢңӨөҰұҮүҺһІі-]+\b", text_for_language))
-    quality_details["quality_checks"]["cyrillic_ratio"] = cyrillic_count >= 120 and cyrillic_count >= latin_count
-    quality_details["quality_checks"]["word_count"] = word_count >= 60
-    if cyrillic_count < 120 or cyrillic_count < latin_count or word_count < 60:
+    quality_details["quality_checks"]["cyrillic_ratio"] = cyrillic_count >= 80 and cyrillic_count >= latin_count
+    quality_details["quality_checks"]["word_count"] = word_count >= 45
+    if cyrillic_count < 80 or cyrillic_count < latin_count or word_count < 45:
         quality_details["quality_error_sample"] = combined[:160]
         return False, "low_kazakh_quality", quality_details
+    if word_count < 80:
+        warnings.append("weak_kazakh_style")
 
     overlap, matched_keywords = count_event_keyword_overlap(combined_lower, event_keywords)
     quality_details["event_keyword_overlap"] = overlap
-    quality_details["quality_checks"]["event_keywords"] = overlap >= MIN_EVENT_KEYWORD_OVERLAP_REQUIRED
     quality_details["matched_event_keywords"] = matched_keywords
-    if overlap < MIN_EVENT_KEYWORD_OVERLAP_REQUIRED:
+    entity_ok, entity_reason = has_required_event_entities(combined_lower, cluster)
+    quality_details["quality_checks"]["event_entities"] = entity_ok
+    if not entity_ok:
         quality_details["quality_error_sample"] = combined[:160]
-        return False, "event_not_mentioned", quality_details
+        return False, entity_reason, quality_details
+    if overlap < MIN_EVENT_KEYWORD_OVERLAP_REQUIRED:
+        warnings.append("event_title_paraphrased")
+
+    unsupported_reason = unsupported_specific_claim_reason(combined, cluster)
+    if unsupported_reason:
+        quality_details["quality_error_sample"] = combined[:160]
+        return False, unsupported_reason, quality_details
 
     if is_too_generic(combined_lower, overlap):
         quality_details["quality_checks"]["too_generic"] = False
-        quality_details["quality_error_sample"] = combined[:160]
-        return False, "too_generic", quality_details
+        warnings.append("generic_style")
 
     repeated, repeated_sample, repeated_count = find_repeated_phrase_detail(combined)
     quality_details["repeated_phrase_sample"] = repeated_sample
@@ -695,6 +975,11 @@ def is_good_kazakh_article_sections(
         quality_details["quality_error_sample"] = repeated_sample or combined[:160]
         return False, "repeated_phrases", quality_details
 
+    if awkward_sentence(combined):
+        warnings.append("awkward_sentence")
+    if warnings:
+        warnings.append("needs_editorial_cleanup")
+    quality_details["warnings"] = unique_values(warnings)
     quality_details["quality_checks"]["accepted"] = True
     return True, None, quality_details
 
@@ -710,14 +995,226 @@ def empty_quality_details(cluster: dict, *, event_keywords: list[str] | None = N
         "quality_error_sample": None,
         "repeated_phrase_sample": None,
         "repeated_phrase_count": 0,
+        "warnings": [],
     }
 
 
 def find_bad_kazakh_phrase(text_lower: str) -> str | None:
+    for phrase in EXTRA_BAD_AI_PHRASES:
+        if phrase in text_lower:
+            return phrase
     for phrase in BAD_KAZAKH_PHRASES:
         if phrase in text_lower:
             return phrase
     return None
+
+
+def find_technical_ai_term(text_lower: str) -> str | None:
+    for term in TECHNICAL_AI_TERMS:
+        if re.search(rf"(?<![a-zа-яәғқңөұүһі0-9-]){re.escape(term)}(?![a-zа-яәғқңөұүһі0-9-])", text_lower):
+            return term
+    return None
+
+
+def has_required_markdown_headings(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines()]
+    if not any(line.startswith("# ") and len(line[2:].strip()) >= 4 for line in lines):
+        return False
+    return all(heading in lines for heading in REQUIRED_MARKDOWN_HEADINGS)
+
+
+def has_required_event_entities(text_lower: str, cluster: dict) -> tuple[bool, str]:
+    title = cluster_search_text(cluster)
+    tags = set(cluster.get("tags") or [])
+    checks: list[tuple[bool, set[str]]] = []
+    is_tech_story = is_tech_geopolitics_cluster(cluster) and not china_is_main_actor(cluster)
+    if is_tech_story:
+        checks.append((True, {"ақш", "anthropic", "ai", "экспорт"}))
+    if "ukraine" in title or "ukraine" in tags:
+        checks.append((True, {"украина", "ресей", "бұұ"}))
+    if "russia" in title or "russia" in tags:
+        checks.append((True, {"ресей", "мәскеу", "путин", "украина"}))
+    if "iran" in title or "iran" in tags:
+        checks.append((True, {"иран", "ақш", "бахрейн", "кувейт"}))
+    if "kazakhstan" in title or "tokayev" in title or "kazakhstan" in tags:
+        checks.append((True, {"қазақстан", "тоқаев", "путин"}))
+    if "pakistan" in title or "afghanistan" in title:
+        checks.append((True, {"пәкістан", "ауғанстан"}))
+    if not is_tech_story and ("china" in title or "taiwan" in title or tags & {"china", "taiwan", "china_influence"}):
+        checks.append((True, {"қытай", "тайвань"}))
+    for _, required_terms in checks:
+        if not any(term in text_lower for term in required_terms):
+            return False, "event_not_mentioned"
+    return True, ""
+
+
+def unsupported_specific_claim_reason(text: str, cluster: dict) -> str | None:
+    source_text = cluster_search_text(cluster)
+    text_lower = text.lower()
+    if has_unsupported_casualty_claim(text_lower, source_text):
+        return "unsupported_casualty_claim"
+    if has_unsupported_date_claim(text_lower, source_text):
+        return "unsupported_date_claim"
+    if has_unsupported_entity_claim(text_lower, source_text):
+        return "unsupported_entity_claim"
+    if has_unsupported_agreement_claim(text_lower, source_text):
+        return "unsupported_agreement_claim"
+    if has_unsupported_policy_claim(text_lower, source_text):
+        return "unsupported_policy_claim"
+    if has_unsupported_future_claim(text_lower, source_text):
+        return "unsupported_future_claim"
+    return None
+
+
+def has_unsupported_casualty_claim(text_lower: str, source_text: str) -> bool:
+    casualty_patterns = (
+        r"\bқаза\b",
+        r"\bқаза тап",
+        r"\bмерт\b",
+        r"\bжарақат",
+        r"\bадам шығыны\b",
+        r"\bбейбіт тұрғын",
+        r"\bkilled\b",
+        r"\binjured\b",
+        r"\bdead\b",
+        r"\bcasualt",
+    )
+    if not any(re.search(pattern, text_lower) for pattern in casualty_patterns):
+        return False
+    output_numbers = extract_numbers(text_lower)
+    if not output_numbers:
+        return False
+    source_numbers = extract_numbers(source_text)
+    return any(number not in source_numbers for number in output_numbers)
+
+
+def has_unsupported_date_claim(text_lower: str, source_text: str) -> bool:
+    months = "қаңтар|ақпан|наурыз|сәуір|мамыр|маусым|шілде|тамыз|қыркүйек|қазан|қараша|желтоқсан"
+    output_dates = set(
+        re.findall(
+            rf"\b(?:\d{{4}}\s+жылғы\s+)?\d{{1,2}}[\s‑-]*(?:ші\s+)?(?:{months})(?:де|да|те|та)?\b",
+            text_lower,
+        )
+    )
+    concrete_durations = extract_concrete_duration_claims(text_lower)
+    if not output_dates and not concrete_durations:
+        return False
+    source_lower = source_text.lower()
+    if any(date not in source_lower for date in output_dates):
+        return True
+    return any(not duration_supported_by_source(duration, source_lower) for duration in concrete_durations)
+
+
+def extract_concrete_duration_claims(text_lower: str) -> list[tuple[str, str]]:
+    number_words = {
+        "бір": "one",
+        "екі": "two",
+        "үш": "three",
+        "төрт": "four",
+        "бес": "five",
+        "алты": "six",
+        "жеті": "seven",
+        "сегіз": "eight",
+        "тоғыз": "nine",
+        "он": "ten",
+    }
+    number_pattern = r"\d+|бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он"
+    unit_pattern = r"күн|апта|ай|жыл|сағат"
+    claims: list[tuple[str, str]] = []
+    for match in re.finditer(rf"\b({number_pattern})\s+({unit_pattern})(?:дан|ден|тан|тен)?\s+(?:ішінде|кейін|бұрын)\b", text_lower):
+        number, unit = match.group(1), match.group(2)
+        normalized_number = number_words.get(number, number)
+        claims.append((normalized_number, unit))
+    return claims
+
+
+def duration_supported_by_source(duration: tuple[str, str], source_lower: str) -> bool:
+    number, unit = duration
+    unit_variants = {
+        "күн": ("day", "days", "күн"),
+        "апта": ("week", "weeks", "апта"),
+        "ай": ("month", "months", "ай"),
+        "жыл": ("year", "years", "жыл"),
+        "сағат": ("hour", "hours", "сағат"),
+    }.get(unit, (unit,))
+    number_variants = {
+        "one": ("one", "1", "бір"),
+        "two": ("two", "2", "екі"),
+        "three": ("three", "3", "үш"),
+        "four": ("four", "4", "төрт"),
+        "five": ("five", "5", "бес"),
+        "six": ("six", "6", "алты"),
+        "seven": ("seven", "7", "жеті"),
+        "eight": ("eight", "8", "сегіз"),
+        "nine": ("nine", "9", "тоғыз"),
+        "ten": ("ten", "10", "он"),
+    }.get(number, (number,))
+    return any(number_variant in source_lower and unit_variant in source_lower for number_variant in number_variants for unit_variant in unit_variants)
+
+
+def has_unsupported_entity_claim(text_lower: str, source_text: str) -> bool:
+    entity_sources = {
+        "қытай": ("china", "chinese", "beijing", "қытай"),
+        "тайвань": ("taiwan", "taipei", "тайвань"),
+        "ресей": ("russia", "russian", "moscow", "kremlin", "ресей"),
+        "иран": ("iran", "iranian", "иран"),
+        "израиль": ("israel", "israeli", "израиль"),
+    }
+    source_lower = source_text.lower()
+    for output_entity, source_terms in entity_sources.items():
+        if output_entity in text_lower and not any(term in source_lower for term in source_terms):
+            return True
+    return False
+
+
+def has_unsupported_agreement_claim(text_lower: str, source_text: str) -> bool:
+    strong_claims = (
+        "келісімге қол қойды",
+        "келісімдерге қол жеткізу",
+        "келісімге қол жеткізу",
+        "мойындады",
+        "растады",
+        "айыптады",
+        "талқылады",
+    )
+    if not any(claim in text_lower for claim in strong_claims):
+        return False
+    return not any(claim in source_text for claim in strong_claims)
+
+
+def has_unsupported_policy_claim(text_lower: str, source_text: str) -> bool:
+    source_lower = source_text.lower()
+    policy_claims = (
+        (("бұйрық бер", "ordered"), ("order", "ordered", "бұйрық")),
+        (("тыйым сал", "banned"), ("ban", "banned", "тыйым")),
+        (("қайта аш", "reopened"), ("reopen", "reopened", "қайта аш")),
+        (("қатаң бақылау", "бақылау күшей", "strict control continues"), ("strict control", "қатаң бақылау", "бақылау күшей")),
+    )
+    for output_terms, source_terms in policy_claims:
+        if any(term in text_lower for term in output_terms) and not any(term in source_lower for term in source_terms):
+            return True
+    return False
+
+
+def has_unsupported_future_claim(text_lower: str, source_text: str) -> bool:
+    future_claims = (
+        "келесі аптада",
+        "жоспарлануда",
+        "жариялайды деп",
+        "жүзеге асырылуы мүмкін",
+        "жаңа кезеңінің басталуы",
+    )
+    if not any(claim in text_lower for claim in future_claims):
+        return False
+    return not any(claim in source_text for claim in future_claims)
+
+
+def extract_numbers(text: str) -> set[str]:
+    return set(re.findall(r"\b\d+(?:[.,]\d+)?\b", text))
+
+
+def awkward_sentence(text: str) -> bool:
+    return any(phrase in text for phrase in ("болып табылады болып", "туралы туралы", "дерек дерек"))
 
 
 def find_gibberish_pattern(text_lower: str) -> str | None:
@@ -892,6 +1389,7 @@ def save_ai_debug(
         quality_details=quality_details,
     )
     write_ai_status(decision, ai_result)
+    write_data_ai_debug(index, ai_result, rendered, decision)
     if not debug_ai_articles():
         return
 
@@ -938,7 +1436,13 @@ def ai_decision_payload(
         "raw_length": len(ai_result.raw_response),
         "rendered_length": len(rendered),
         "json_parsed": json_parsed,
-        "fields": list(REQUIRED_JSON_FIELDS) if json_parsed and sections else [],
+        "parsed": bool(sections),
+        "accepted": not used_fallback,
+        "reason": reject_reason,
+        "warnings": details.get("warnings", []),
+        "slot": str(cluster.get("slot", "")),
+        "title": str(sections.get("title") if sections else cluster.get("title", "")),
+        "fields": list(REQUIRED_JSON_FIELDS) if sections else [],
         "cluster_title": str(cluster.get("title", "")),
         "sources": list(cluster.get("sources", [])[:3]),
         "debug_folder": str(ai_debug_dir()),
@@ -953,6 +1457,28 @@ def ai_decision_payload(
         "repeated_phrase_count": details.get("repeated_phrase_count", 0),
     }
     return payload
+
+
+def write_data_ai_debug(index: int, ai_result: AITextResult, rendered: str, decision: dict) -> None:
+    folder = Path("data") / "ai_debug" / today_str()
+    folder.mkdir(parents=True, exist_ok=True)
+    prefix = f"{index:02d}"
+    (folder / f"{prefix}_raw.md").write_text(ai_result.raw_response or "", encoding="utf-8")
+    (folder / f"{prefix}_normalized.md").write_text(rendered or "", encoding="utf-8")
+    validation = {
+        "provider": decision.get("provider"),
+        "model": decision.get("model"),
+        "parsed": decision.get("parsed"),
+        "accepted": decision.get("accepted"),
+        "reason": decision.get("reason"),
+        "warnings": decision.get("warnings", []),
+        "slot": decision.get("slot", ""),
+        "title": decision.get("title", ""),
+    }
+    (folder / f"{prefix}_validation.json").write_text(
+        json.dumps(validation, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def write_ai_status(decision: dict, ai_result: AITextResult) -> None:
@@ -1034,6 +1560,8 @@ def title_fingerprint(cluster: dict) -> set[str]:
 def is_article_topic(cluster: dict) -> bool:
     tags = set(cluster.get("tags") or [])
     text = f"{cluster.get('title', '')} {cluster.get('summary', '')}".lower()
+    if is_tech_geopolitics_cluster(cluster):
+        return True
     if {"russia", "ukraine"} <= tags:
         return any(word in text for word in ["russia", "ukraine", "putin", "moscow", "kyiv", "kiev"])
     if {"usa", "iran"} <= tags:
@@ -1119,6 +1647,8 @@ def article_topic(cluster: dict) -> str:
         return "russia_ukraine"
     if {"usa", "iran"} <= tags:
         return "usa_iran"
+    if is_tech_geopolitics_cluster(cluster) and not china_is_main_actor(cluster):
+        return "tech_geopolitics"
     if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
         return "china_influence"
     if {"china", "taiwan"} & tags:
@@ -1152,9 +1682,116 @@ def extract_markdown_title(content: str) -> str | None:
     return None
 
 
+def event_based_title(cluster: dict) -> str:
+    original = str(cluster.get("title") or "").strip()
+    text = cluster_search_text(cluster)
+    if is_tech_geopolitics_cluster(cluster) and "anthropic" in text:
+        return "АҚШ Anthropic AI модельдеріне қатысты экспорттық бақылауды жеңілдетті"
+    if "un details humanitarian toll" in text and ("ukrainian power" in text or "power industry" in text):
+        return "БҰҰ Украина энергетикасына жасалған соққылардың гуманитарлық салдарын атады"
+    if is_kremlin_tokayev_event(cluster):
+        return "Путин мен Тоқаев телефон арқылы сөйлесті"
+    if "pakistan" in text and "afghanistan" in text and ("militant" in text or "target" in text or "strike" in text):
+        return "Пәкістан Ауғанстандағы содырлар нысандарына соққы жасағанын мәлімдеді"
+    if "iran" in text and (("bahrain" in text and "kuwait" in text) or "talks" in text or "us strikes" in text):
+        return "Иран, Бахрейн, Кувейт және келіссөз дауы"
+    mapped = conservative_kazakh_title(original, cluster)
+    if mapped.lower() in GENERIC_FALLBACK_TITLES:
+        mapped = original or "Редакциялық тексеруді қажет ететін оқиға"
+    if mapped != original:
+        print(f"[fallback] title normalized: {mapped}")
+    return mapped
+
+
+def conservative_kazakh_title(title: str, cluster: dict) -> str:
+    if not title:
+        return kazakh_headline(cluster)
+    replacements = {
+        "UN": "БҰҰ",
+        "United Nations": "БҰҰ",
+        "humanitarian toll": "гуманитарлық салдар",
+        "strikes": "соққылар",
+        "strike": "соққы",
+        "Ukrainian": "Украина",
+        "Ukraine": "Украина",
+        "Russia": "Ресей",
+        "Russian": "Ресей",
+        "Kazakhstan": "Қазақстан",
+        "President": "президент",
+        "telephone conversation": "телефон арқылы сөйлесті",
+        "Pakistan": "Пәкістан",
+        "Afghanistan": "Ауғанстан",
+        "militant targets": "содырлар нысандары",
+        "Iran": "Иран",
+        "Bahrain": "Бахрейн",
+        "Kuwait": "Кувейт",
+        "talks": "келіссөз",
+    }
+    mapped = title
+    for source, target in replacements.items():
+        mapped = re.sub(rf"\b{re.escape(source)}\b", target, mapped, flags=re.IGNORECASE)
+    return mapped.strip() or kazakh_headline(cluster)
+
+
+def is_kremlin_tokayev_event(cluster: dict) -> bool:
+    text = cluster_search_text(cluster)
+    sources = " ".join(cluster.get("sources") or []).lower()
+    return (
+        ("kremlin" in sources or "kremlin" in text)
+        and ("tokayev" in text or "kazakhstan" in text)
+        and ("telephone conversation" in text or "phone" in text)
+    )
+
+
+def safe_event_sentence(title: str) -> str:
+    title = title.rstrip(".")
+    return title if title else "дереккөз оқиғаны қысқа хабар ретінде берді"
+
+
+def fallback_what_happened(cluster: dict, summary: str) -> str:
+    if is_tech_geopolitics_cluster(cluster) and "anthropic" in cluster_search_text(cluster):
+        return "France 24 АҚШ-тың Anthropic AI модельдеріне қатысты экспорттық бақылауды жеңілдетуі туралы хабарлады. Қолда бар дерек осы қысқа хабармен шектеледі, сондықтан нақты шешім тәртібі мен кейінгі саясат туралы қосымша ресми түсіндірме қажет."
+    if summary:
+        return f"{summary} Нақты салдары мен тараптардың түсіндірмесін қосымша дереккөздер арқылы тексеру қажет."
+    return "Дереккөз оқиғаны қысқа хабар ретінде берді. Қосымша мәлімет шектеулі, сондықтан нақты салдары мен тараптардың түсіндірмесін бөлек тексеру қажет."
+
+
+def validate_fallback_article(cluster: dict, article: str) -> None:
+    title = extract_markdown_title(article) or ""
+    title_lower = title.lower()
+    if title_lower in GENERIC_FALLBACK_TITLES:
+        print(f"[fallback] warning: generic title remains: {title}")
+    for phrase in BROKEN_FALLBACK_PHRASES:
+        if phrase in article:
+            print(f"[fallback] warning: broken phrase detected: {phrase}")
+    body_lower = article.lower()
+    source_names = [source.lower() for source in cluster.get("sources") or [] if source]
+    if source_names and not any(source in body_lower for source in source_names):
+        print("[fallback] warning: source name missing")
+    if not fallback_has_main_entity(cluster, body_lower):
+        print("[fallback] warning: main entity missing")
+
+
+def fallback_has_main_entity(cluster: dict, body_lower: str) -> bool:
+    text = cluster_search_text(cluster)
+    if is_tech_geopolitics_cluster(cluster):
+        return all(term in body_lower for term in ("ақш", "anthropic", "ai", "экспорт"))
+    if "ukraine" in text or "russia" in text:
+        return "украина" in body_lower or "ресей" in body_lower
+    if "iran" in text:
+        return "иран" in body_lower or "ақш" in body_lower
+    if "tokayev" in text or "kazakhstan" in text:
+        return any(term in body_lower for term in ("қазақстан", "тоқаев", "путин"))
+    if "pakistan" in text or "afghanistan" in text:
+        return "пәкістан" in body_lower or "ауғанстан" in body_lower
+    return True
+
+
 def kazakh_headline(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
     title = str(cluster.get("title", "")).lower()
+    if is_tech_geopolitics_cluster(cluster):
+        return "АҚШ Anthropic AI модельдеріне қатысты экспорттық бақылауды жеңілдетті"
     if {"russia", "ukraine"} <= tags:
         if "refinery" in title or "oil" in title:
             return "Украина соққысынан кейін Ресей инфрақұрылымы назарда"
@@ -1184,6 +1821,13 @@ def kazakh_headline(cluster: dict) -> str:
 
 def importance_text(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
+    text = cluster_search_text(cluster)
+    if is_tech_geopolitics_cluster(cluster):
+        return "Бұл хабар AI модельдері мен экспорттық бақылаудың технологиялық геосаясаттағы орнына қатысты маңызды. Қолда бар дерек шектеулі болғандықтан, шешімнің нақты тәртібі мен ықтимал салдары ресми түсіндірмелер арқылы нақтылануы керек."
+    if is_kremlin_tokayev_event(cluster):
+        return "Бұл хабар Қазақстан мен Ресей арасындағы дипломатиялық байланыс ретінде маңызды. Нақты мазмұны дереккөздегі қысқа хабармен шектеледі, сондықтан қосымша мәлімдемелерді бөлек бақылау қажет."
+    if "pakistan" in text and "afghanistan" in text:
+        return "Бұл хабар Пәкістан мен Ауғанстан арасындағы қауіпсіздік тәуекелдерін көрсетеді. Оқиғаның салдары мен тараптардың түсіндірмесі қосымша дереккөздер арқылы нақтылануы керек."
     if {"usa", "iran"} <= tags or "hormuz" in tags:
         return "Бұл бағыттағы өзгерістер Парсы шығанағы қауіпсіздігіне, келіссөз процесіне және энергетикалық маршруттарға әсер етуі мүмкін. Егер зымыран, дрон немесе теңіз жолдары туралы жаңа дерек шықса, аймақтық тәуекел қайта бағаланады."
     if {"russia", "ukraine"} <= tags:
@@ -1201,6 +1845,8 @@ def lead_text(cluster: dict, title: str, summary: str) -> str:
     tags = set(cluster.get("tags") or [])
     if summary:
         return f"{summary} Бұл оқиға «{title}» тақырыбымен беріліп, ресми мәлімдемелер мен кейінгі реакцияларды бақылауды қажет етеді."
+    if is_tech_geopolitics_cluster(cluster):
+        return "France 24 АҚШ, Anthropic AI модельдері және экспорттық бақылау туралы қысқа хабар жариялады. Дерек шектеулі болғандықтан, мәтін тек берілген ақпаратқа сүйенеді."
     if {"usa", "iran"} <= tags:
         return "АҚШ пен Иранға қатысты хабарлар шабуыл, соққы, келіссөз және Ормуз бұғазы қауіпсіздігі төңірегінде шоғырланып отыр. Қосымша мәлімет шектеулі болғандықтан, тараптардың ресми реакциясы маңызды."
     if {"russia", "ukraine"} <= tags:
@@ -1218,6 +1864,8 @@ def what_happened_text(cluster: dict, title: str, summary: str) -> str:
     tags = set(cluster.get("tags") or [])
     if summary:
         return f"{summary} Қосымша мәлімет шектеулі болса да, оқиғаның негізгі бағыты осы хабарлар арқылы көрінеді."
+    if is_tech_geopolitics_cluster(cluster):
+        return "Дереккөз АҚШ-тың Anthropic AI модельдеріне қатысты экспорттық бақылауды жеңілдетуі туралы хабарлады. Қосымша нақты дерек болмағандықтан, бұдан артық саяси немесе әскери қорытынды жасалмайды."
     if {"usa", "iran"} <= tags:
         return "Дереккөздер АҚШ пен Иран арасындағы жаңа шиеленіс туралы хабарлады. Хабарларда соққы, келіссөздің тоқтауы немесе Ормуз бұғазы қауіпсіздігі сияқты тақырыптар қатар аталады. Қосымша мәлімет шектеулі, сондықтан нақты салдарын бөлек тексеру қажет."
     if {"russia", "ukraine"} <= tags:
@@ -1233,6 +1881,13 @@ def what_happened_text(cluster: dict, title: str, summary: str) -> str:
 
 def next_watch_text(cluster: dict) -> str:
     tags = set(cluster.get("tags") or [])
+    text = cluster_search_text(cluster)
+    if is_tech_geopolitics_cluster(cluster):
+        return "Әрі қарай АҚШ ведомстволарының, Anthropic компаниясының және ресми құжаттардың қосымша түсіндірмелері бақыланады. Қазір мәтін дереккөзде берілген қысқа хабармен ғана шектеледі."
+    if is_kremlin_tokayev_event(cluster):
+        return "Әрі қарай Ақорда мен Кремльдің қосымша түсіндірмелері және екіжақты күн тәртібіне қатысты ресми хабарлар бақыланады."
+    if "pakistan" in text and "afghanistan" in text:
+        return "Әрі қарай Исламабад пен Кабулдың ресми мәлімдемелері, шекара маңындағы қауіпсіздік хабарлары және тәуелсіз дереккөздердің растауы маңызды болады."
     if {"usa", "iran"} <= tags or "hormuz" in tags:
         return "Әрі қарай АҚШ, Иран және өңір елдерінің ресми мәлімдемелері, келіссөз туралы сигналдар және Ормуз бұғазы маңындағы қауіпсіздік хабарлары маңызды болады."
     if {"russia", "ukraine"} <= tags:

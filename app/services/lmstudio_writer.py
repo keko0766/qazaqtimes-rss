@@ -9,7 +9,7 @@ from app.services.ai_types import AITextResult
 
 
 DEFAULT_LMSTUDIO_URL = "http://host.docker.internal:1234/v1"
-DEFAULT_LMSTUDIO_MODEL = "model-identifier"
+DEFAULT_LMSTUDIO_MODEL = "openai/gpt-oss-20b"
 DEFAULT_LMSTUDIO_TIMEOUT = 180
 SYSTEM_PROMPT = "Сен қазақ тілінде қысқа, нақты, фактіні бұрмаламайтын жаңалық мақаласын жазатын редакторсың."
 

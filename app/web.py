@@ -31,9 +31,9 @@ PRESETS = {"daily_articles"}
 MODES = {"fast", "normal"}
 AI_PROVIDERS = {"none", "ollama", "lmstudio"}
 LMSTUDIO_DEFAULT_URL = "http://host.docker.internal:1234/v1"
-LMSTUDIO_DEFAULT_MODEL = "model-identifier"
+LMSTUDIO_DEFAULT_MODEL = "openai/gpt-oss-20b"
 OLLAMA_DEFAULT_URL = "http://ollama:11434"
-OLLAMA_DEFAULT_MODEL = "qwen2.5:7b"
+OLLAMA_DEFAULT_MODEL = "gpt-oss:20b"
 _LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
 _OLLAMA_STATUS = {
     "checked_at": 0.0,
@@ -1268,7 +1268,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderAiStatus(status) {
       if (aiProvider.value === "ollama") {
-        const model = status.current_model ? ` · ${status.current_model}` : "";
+        const model = status.current_model ? ` · Модель: ${status.current_model}` : "";
         let label = status.ollama_status || "Қосылмаған";
         if (status.ollama_loading) label = "Дайындалып жатыр";
         if (status.ollama_available) label = "Дайын";
@@ -1276,7 +1276,7 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       if (aiProvider.value === "lmstudio") {
-        const model = status.current_model ? ` · ${status.current_model}` : "";
+        const model = status.current_model ? ` · Модель: ${status.current_model}` : "";
         aiState.textContent = `LM Studio: ${status.lmstudio_available ? "Дайын" : "Қосылмаған"}${model}`;
         return;
       }

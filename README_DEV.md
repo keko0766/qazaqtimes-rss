@@ -646,7 +646,7 @@ LM Studio local server provider.
 Defaults:
 
 - `LMSTUDIO_URL=http://host.docker.internal:1234/v1`
-- `LMSTUDIO_MODEL=model-identifier`
+- `LMSTUDIO_MODEL=openai/gpt-oss-20b`
 - `LMSTUDIO_TIMEOUT=180`
 
 Негізгі функциялар:
@@ -673,21 +673,15 @@ Ollama provider.
 Defaults:
 
 - `OLLAMA_URL=http://ollama:11434`
-- `OLLAMA_MODEL=qwen2.5:7b` — recommended default for Kazakh article quality
+- `OLLAMA_MODEL=gpt-oss:20b`
 - `OLLAMA_TIMEOUT=180`
 
-Recommended models for Kazakh news writing:
-
-- `qwen2.5:3b` — light mode; weak Kazakh quality, fallback often
-- `qwen2.5:7b` — recommended balance of quality and resource use
-- `qwen2.5:14b` — heavy quality mode if hardware allows
-
-Article JSON generation options (sent in `/api/generate` payload):
+Article generation options (sent in `/api/generate` payload):
 
 - `temperature`: 0.2
 - `top_p`: 0.8
 - `repeat_penalty`: 1.2
-- `num_predict`: 500
+- `num_predict`: 700
 
 Негізгі функциялар:
 
@@ -705,7 +699,7 @@ Text generation endpoint:
 POST {OLLAMA_URL}/api/generate
 ```
 
-Payload ішінде `stream: false` және article JSON options:
+Payload ішінде `stream: false` және article options:
 
 ```json
 {
@@ -713,7 +707,7 @@ Payload ішінде `stream: false` және article JSON options:
     "temperature": 0.2,
     "top_p": 0.8,
     "repeat_penalty": 1.2,
-    "num_predict": 500
+    "num_predict": 700
   }
 }
 ```
@@ -958,6 +952,8 @@ title: "..."
 date: "YYYY-MM-DD"
 source_count: 3
 mode: "fallback"
+slot: "china_influence"
+slot_label: "Қытайдың агрессиялық ықпалы"
 ---
 ```
 
@@ -986,31 +982,38 @@ Fallback:
 
 AI quality check:
 
-- AI модель толық Markdown жазбайды; тек JSON section content қайтарады.
-- App JSON-ды parse edip, Markdown құрылымын өзі render ededi.
-- JSON parse сәтті болса, барлық 4 өріс (`lead`, `what_happened`, `why_important`, `what_next`) бар және тым қысқа емес.
+- AI модель strict Markdown article sections қайтарады.
+- App required heading-терді parse edip, дереккөздер тізімін сақталған source links арқылы normalize етеді.
+- Parse сәтті болса, барлық 4 негізгі section (`lead`, `what_happened`, `why_important`, `what_next`) бар және тым қысқа емес.
 - `finish_reason`/`done_reason` = `length` болса қабылданбайды.
 - Banned phrases болмауы керек.
+- Technical words (`cluster`, `metadata`, `метадерек`, `кластер`) болмауы керек.
 - Cyrillic/Kazakh мәтін жеткілікті болуы керек.
+- Бір сөйлем немесе ұзын тіркес қайталанбауы керек.
 - Сапасыз AI output болса fallback қолданылады.
 - Reject reason әрқашан log/debug status ішінде сақталады.
 
-### Structured JSON AI output
+### Structured Markdown AI output
 
-AI енді толық Markdown мақала жазбайды. Ол тек мына JSON қайтарады:
+AI мына Markdown құрылымды сақтауы керек:
 
-```json
-{
-  "lead": "...",
-  "what_happened": "...",
-  "why_important": "...",
-  "what_next": "..."
-}
+```markdown
+# Тақырып
+
+**Лид:**
+
+**Не болды:**
+
+**Неге маңызды:**
+
+**Әрі қарай не күту керек:**
+
+**Дереккөздер:**
 ```
 
-App `parse_ai_article_json()` арқылы JSON-ды оқиды, `render_structured_article()` арқылы Markdown құрылымын өзі жасайды. Heading, дереккөз тізімі және `# тақырып` app кодында беріледі; модель тек section мәтінін жазады.
+App `parse_ai_article_markdown()` арқылы Markdown-ды оқиды, `render_structured_article()` арқылы final Markdown құрылымын normalize етеді. Heading, дереккөз тізімі және frontmatter app кодында бекітіледі.
 
-Prompt тек cluster title, summary, tags, max 3 source және max 3 source title/URL қамтиды. Толық digest немесе ұзын unrelated context жіберілмейді. Prompt ішінде қысқа GOOD JSON мысалы бар — модель стильді еліктеуі керек, фактілерді емес.
+Prompt тек title, summary, max 3 source және max 3 source title/URL қамтиды. Толық digest немесе ұзын unrelated context жіберілмейді.
 
 ### AI article debug
 
@@ -1045,11 +1048,11 @@ output/debug_ai/YYYY-MM-DD/
 ```json
 {
   "provider": "ollama",
-  "model": "qwen2.5:7b",
+  "model": "gpt-oss:20b",
   "used_fallback": false,
   "reject_reason": null,
   "raw_length": 1704,
-  "json_parsed": true,
+  "json_parsed": false,
   "fields": ["lead", "what_happened", "why_important", "what_next"]
 }
 ```
@@ -1058,15 +1061,16 @@ output/debug_ai/YYYY-MM-DD/
 
 Reject reason meanings:
 
-- `json_parse_failed` — AI response ішінен JSON оқылмады.
-- `missing_json_fields` — `lead`, `what_happened`, `why_important`, `what_next` өрістерінің біреуі жоқ.
-- `empty_json_field` — JSON өрісі бос немесе тым қысқа.
+- `markdown_parse_failed` — AI response strict Markdown мақала емес.
+- `missing_required_headings` — required Markdown heading жоқ немесе реті бұзылған.
+- `empty_json_field` — required section бос немесе тым қысқа.
 - `empty_response` — provider бос мәтін қайтарды.
 - `too_short` — section мәтіні сөз саны бойынша жеткіліксіз.
 - `too_long` — section мәтіні 320 сөзден көп.
 - `finish_reason_length` — provider output-ты length/truncation себебімен тоқтатты.
 - `repeated_phrases` — бір сөйлем/ұзын тіркес шамадан тыс қайталанды.
-- `banned_phrase` — banned nonsense phrase табылды.
+- `technical_terms` — output ішінде техникалық сөз бар.
+- `gibberish_text` — banned nonsense phrase табылды.
 - `low_kazakh_text_ratio` — қазақ/кирилл мәтіні жеткіліксіз немесе latin үлесі көп.
 - `markdown_broken` — Markdown fence немесе merge marker сияқты broken белгі бар.
 - `ollama_not_ready` — Ollama `/api/tags` немесе generation endpoint қолжетімсіз.
@@ -1076,30 +1080,31 @@ Reject reason meanings:
 Troubleshoot flow:
 
 1. `DEBUG_AI_ARTICLES=true` қойып бір мақала жаса.
-2. `output/debug_ai/YYYY-MM-DD/01_prompt.md` ішінде prompt JSON-only екенін және cluster title, summary, 3 source max, tags ғана барын тексер.
+2. `output/debug_ai/YYYY-MM-DD/01_prompt.md` ішінде prompt strict Markdown article sections сұрайтынын және тек title, summary, sources, links қолданатынын тексер.
 3. `01_raw_response.md` ішінде AI нақты не қайтарғанын қара.
 4. `01_parsed_sections.json` ішінде parse edilgen section content-ті қара.
 5. `01_rendered_article.md` ішінде app render etken final Markdown-ды қара.
 6. `01_decision.json` ішінен `used_fallback`, `reject_reason`, `json_parsed`, `fields`, `raw_length` қара.
 7. `reject_reason=ollama_not_ready` болса `data/ollama_status.json`, `data/ollama_setup.log`, `docker compose --profile ollama exec ollama ollama list` тексер.
 8. `reject_reason=finish_reason_length` болса provider max output қысқа; бұл run fallback қолданады.
-9. `reject_reason=json_parse_failed` болса модель JSON орнына Markdown/түсіндіру жазған болуы мүмкін; fallback қолданылады.
+9. `reject_reason=missing_required_headings` болса модель required heading-терді сақтамаған; fallback қолданылады.
 
 Article writer log үлгісі:
 
 ```text
-[ai] provider=ollama model=qwen2.5:7b
+[ai] provider=ollama model=gpt-oss:20b
 [ai] ollama available=true
 [ai] raw response length=1234
-[ai] json parsed=true
+[ai] markdown parsed=true
 [ai] quality accepted=true
 ```
 
 Fallback болса:
 
 ```text
-[ai] json parsed=false reason=json_parse_failed
-[ai] quality accepted=false reason=json_parse_failed
+[ai] markdown parsed=false reason=missing_required_headings
+[ai] quality accepted=false reason=missing_required_headings
+[article] AI мәтіні сапасыз, fallback қолданылды
 [article] fallback қолданылды
 ```
 
@@ -1108,7 +1113,7 @@ Fallback болса:
 Preferred env:
 
 ```env
-AI_PROVIDER=none
+AI_PROVIDER=ollama
 # none | ollama | lmstudio
 DEBUG_AI_ARTICLES=false
 ```
@@ -1116,7 +1121,7 @@ DEBUG_AI_ARTICLES=false
 Compatibility env:
 
 ```env
-USE_OLLAMA=false
+USE_OLLAMA=true
 ```
 
 ### none
@@ -1136,7 +1141,7 @@ Env:
 ```env
 AI_PROVIDER=lmstudio
 LMSTUDIO_URL=http://host.docker.internal:1234/v1
-LMSTUDIO_MODEL=model-identifier
+LMSTUDIO_MODEL=openai/gpt-oss-20b
 LMSTUDIO_TIMEOUT=180
 ```
 
@@ -1152,7 +1157,7 @@ Run:
 ```bash
 docker compose run --rm \
   -e AI_PROVIDER=lmstudio \
-  -e LMSTUDIO_MODEL=model-identifier \
+  -e LMSTUDIO_MODEL=openai/gpt-oss-20b \
   app python app/main.py article --mode fast --limit 5
 ```
 
@@ -1168,11 +1173,11 @@ Env:
 AI_PROVIDER=ollama
 USE_OLLAMA=true
 OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_MODEL=gpt-oss:20b
 OLLAMA_TIMEOUT=180
 ```
 
-`qwen2.5:7b` ұсынылатын default. `qwen2.5:3b` жеңіл режим ретінде жұмыс істейді, бірақ қазақша мәтіні әлсіз болғандықтан fallback жиі болады. `qwen2.5:14b` — ауыр quality mode.
+Ollama үшін default local model — `gpt-oss:20b`. Егер model дайын болмаса немесе quality guard reject етсе, fallback template қолданылады. Басқа local fallback model жоқ.
 
 Ollama endpoint:
 
@@ -1184,11 +1189,12 @@ One-click lifecycle:
 - `start.command` → `start.sh`.
 - `start.sh` GUI service-ті көтереді.
 - `start.sh` `docker compose --profile ollama up -d ollama` және `ollama-pull` командаларын background-та жүргізеді.
+- `ollama-pull` default model: `gpt-oss:20b`.
 - Setup log: `data/ollama_setup.log`.
 - Setup status: `data/ollama_status.json`.
 - `/api/status` осы status file мен live `/api/tags` check нәтижесін біріктіріп, `ollama_available`, `ollama_loading`, `ollama_status_message`, `current_model` қайтарады.
 - Job басталғанда Ollama дайын болса subprocess env: `AI_PROVIDER=ollama`, `USE_OLLAMA=true`.
-- Дайын болмаса subprocess env: `AI_PROVIDER=none`, `USE_OLLAMA=false`; fallback template қолданылады.
+- Дайын болмаса fallback template қолданылады.
 - Background setup жалғаса береді; дайын болған соң келесі генерация автоматты Ollama қолданады.
 
 Manual developer commands әлі де бар:
@@ -1245,8 +1251,8 @@ Default `docker compose config` ішінде іске қосылмайды. One-
 
 - Profiles: `ollama`, `setup`
 - `OLLAMA_HOST=http://ollama:11434`
-- `OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}`
-- Command: `sleep 10 && ollama pull $$OLLAMA_MODEL`
+- `OLLAMA_MODEL=${OLLAMA_MODEL:-gpt-oss:20b}`
+- Command: `sleep 10 && ollama pull "$OLLAMA_MODEL"` compose escaping арқылы `$$OLLAMA_MODEL`.
 
 ### `docker-compose.gpu.yml`
 
@@ -1371,13 +1377,13 @@ OUTPUT_DIR=output
 APP_TIMEZONE=Asia/Almaty
 REQUEST_TIMEOUT=20
 MAX_RSS_ITEMS_PER_SOURCE=30
-AI_PROVIDER=none
-USE_OLLAMA=false
+AI_PROVIDER=ollama
+USE_OLLAMA=true
 OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_MODEL=gpt-oss:20b
 OLLAMA_TIMEOUT=180
 LMSTUDIO_URL=http://host.docker.internal:1234/v1
-LMSTUDIO_MODEL=model-identifier
+LMSTUDIO_MODEL=openai/gpt-oss-20b
 LMSTUDIO_TIMEOUT=180
 ```
 

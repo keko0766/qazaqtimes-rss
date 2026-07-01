@@ -8,14 +8,14 @@ from app.services.ai_types import AITextResult
 
 
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
+DEFAULT_OLLAMA_MODEL = "gpt-oss:20b"
 DEFAULT_OLLAMA_TIMEOUT = 180
 
 ARTICLE_JSON_OPTIONS = {
     "temperature": 0.2,
     "top_p": 0.8,
     "repeat_penalty": 1.2,
-    "num_predict": 500,
+    "num_predict": 700,
 }
 
 _ollama_unavailable_logged = False

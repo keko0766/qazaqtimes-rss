@@ -6,14 +6,15 @@ cd "$(dirname "$0")"
 LOG_FILE="data/ollama_setup.log"
 STATUS_FILE="data/ollama_status.json"
 URL="http://localhost:8000"
-DEFAULT_OLLAMA_MODEL="qwen2.5:7b"
+DEFAULT_OLLAMA_MODEL="gpt-oss:20b"
 OLLAMA_PULL_TIMEOUT_SECONDS="${OLLAMA_PULL_TIMEOUT_SECONDS:-7200}"
 
 write_ollama_status() {
   local state="$1"
   local message="$2"
   local error="${3:-}"
-  python3 - "$STATUS_FILE" "$state" "$message" "$error" <<'PY'
+  local model="${4:-$(current_ollama_model)}"
+  python3 - "$STATUS_FILE" "$state" "$message" "$error" "$model" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ payload = {
     "state": sys.argv[2],
     "message": sys.argv[3],
     "error": sys.argv[4],
+    "model": sys.argv[5],
     "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
 }
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -69,7 +71,7 @@ run_ollama_setup() {
   mkdir -p data
   local model_name
   model_name="$(current_ollama_model)"
-  write_ollama_status "starting" "Ollama контейнері іске қосылып жатыр"
+  write_ollama_status "starting" "Ollama контейнері іске қосылып жатыр" "" "$model_name"
   {
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Ollama setup басталды"
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Ollama model: $model_name"
@@ -96,18 +98,18 @@ run_ollama_setup() {
     wait "$compose_pid" >/dev/null 2>&1 || true
 
     if [ "$ready" != "true" ]; then
-      write_ollama_status "error" "Ollama іске қосылмады" "docker compose up failed"
+      write_ollama_status "error" "Ollama іске қосылмады" "docker compose up failed" "$model_name"
       echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: Ollama service start failed"
       exit 0
     fi
 
-    write_ollama_status "pulling" "Ollama моделі жүктеліп жатыр: $model_name"
+    write_ollama_status "pulling" "Ollama моделі жүктеліп жатыр: $model_name" "" "$model_name"
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] docker compose --profile ollama --profile setup run --rm ollama-pull"
     if run_with_timeout "$OLLAMA_PULL_TIMEOUT_SECONDS" docker compose --profile ollama --profile setup run --rm ollama-pull; then
-      write_ollama_status "ready" "Ollama дайын: $model_name"
+      write_ollama_status "ready" "Ollama дайын: $model_name" "" "$model_name"
       echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Ollama setup дайын"
     else
-      write_ollama_status "error" "Ollama моделі жүктелмеді: $model_name" "ollama pull failed or timed out"
+      write_ollama_status "error" "Ollama моделі жүктелмеді: $model_name" "ollama pull failed or timed out" "$model_name"
       echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: Ollama model pull failed"
     fi
   } >> "$LOG_FILE" 2>&1

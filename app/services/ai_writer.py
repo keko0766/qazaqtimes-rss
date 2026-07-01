@@ -17,6 +17,8 @@ def generate_article_text(prompt: str) -> AITextResult:
 
 def selected_provider() -> str:
     provider = os.getenv("AI_PROVIDER", "none").strip().lower()
+    if provider == "none":
+        return "none"
     if provider in {"ollama", "lmstudio"}:
         return provider
     if ollama_writer.use_ollama():

@@ -5,6 +5,7 @@ __pycache__/
 data/*.sqlite3
 data/*.log
 data/*.json
+data/ai_debug/
 output/*.md
 output/**/*.md
 output/debug_ai/
