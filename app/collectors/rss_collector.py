@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from threading import Event
 
 import feedparser
 import requests
@@ -57,9 +58,17 @@ def collect_rss_source(source: dict, timeout: int = 20, max_items: int = 30) -> 
     return items
 
 
-def collect_rss_sources(sources: list[dict], timeout: int = 20, max_items: int = 30) -> list[dict]:
+def collect_rss_sources(
+    sources: list[dict],
+    timeout: int = 20,
+    max_items: int = 30,
+    cancel_event: Event | None = None,
+) -> list[dict]:
     all_items: list[dict] = []
     for source in sources:
+        if cancel_event is not None and cancel_event.is_set():
+            print("[rss] тоқтату сұралды")
+            break
         all_items.extend(collect_rss_source(source, timeout=timeout, max_items=max_items))
     return all_items
 

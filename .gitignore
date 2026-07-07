@@ -9,3 +9,5 @@ data/ai_debug/
 output/*.md
 output/**/*.md
 output/debug_ai/
+build/
+dist/

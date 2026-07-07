@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
@@ -8,6 +9,8 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,10 +24,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.utils.datetime import today_str
+from app.utils.paths import (
+    configure_environment_defaults,
+    configure_logging,
+    data_dir,
+    ollama_status_path,
+    output_dir,
+)
+from app.main import PipelineCancelled, run_article, run_collect, run_daily_workflow, run_report
+from app.services import ollama_writer
+from app.services.ollama_manager import DOWNLOAD_URL
 
-OUTPUT_DIR = PROJECT_ROOT / "output"
-DATA_DIR = PROJECT_ROOT / "data"
-OLLAMA_STATUS_PATH = DATA_DIR / "ollama_status.json"
+configure_environment_defaults()
+
+OUTPUT_DIR = output_dir()
+DATA_DIR = data_dir()
+OLLAMA_STATUS_PATH = ollama_status_path()
 AI_STATUS_PATH = DATA_DIR / "ai_status.json"
 COMMANDS = {"collect", "report", "article", "all"}
 PRESETS = {"daily_articles"}
@@ -32,8 +47,9 @@ MODES = {"fast", "normal"}
 AI_PROVIDERS = {"none", "ollama", "lmstudio"}
 LMSTUDIO_DEFAULT_URL = "http://host.docker.internal:1234/v1"
 LMSTUDIO_DEFAULT_MODEL = "openai/gpt-oss-20b"
-OLLAMA_DEFAULT_URL = "http://ollama:11434"
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 OLLAMA_DEFAULT_MODEL = "gpt-oss:20b"
+LOGGER = logging.getLogger(__name__)
 _LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
 _OLLAMA_STATUS = {
     "checked_at": 0.0,
@@ -57,7 +73,7 @@ class JobState:
         self.finished_at = ""
         self.returncode: int | None = None
         self.output: list[str] = []
-        self.process: subprocess.Popen[str] | None = None
+        self.cancel_event: threading.Event | None = None
         self.stop_requested = False
         self.user_message = ""
 
@@ -92,6 +108,10 @@ class JobState:
                 "ollama_status": ollama_state["status"],
                 "ollama_status_message": ollama_state["message"],
                 "ollama_error": ollama_state["error"],
+                "ollama_state": ollama_state["state"],
+                "ollama_progress": ollama_state["percent"],
+                "ollama_missing": ollama_state["state"] == "missing",
+                "ollama_download_url": DOWNLOAD_URL,
                 "lmstudio_available": lmstudio_ready,
                 "current_model": current_model(selected_provider),
                 "last_ai_provider": ai_status.get("provider", ""),
@@ -144,26 +164,19 @@ class JobState:
     def start_command(self, command: str, mode: str, ai_provider: str, limit: int = 5) -> bool:
         if command not in COMMANDS:
             return False
-        steps = [build_command(command, mode, limit, replace_today=(command == "article"))]
-        label = command
-        return self.start(label, "", steps, mode, ai_provider, limit)
+        return self.start(command, "", mode, ai_provider, limit)
 
     def start_preset(self, preset: str, mode: str, ai_provider: str, limit: int = 5) -> bool:
         if preset not in PRESETS:
             return False
         if preset == "daily_articles":
-            steps = [
-                build_command("all", mode, limit),
-                build_command("article", mode, limit, replace_today=True),
-            ]
-            return self.start("daily_articles", preset, steps, mode, ai_provider, limit)
+            return self.start("daily_articles", preset, mode, ai_provider, limit)
         return False
 
     def start(
         self,
         command: str,
         preset: str,
-        steps: list[list[str]],
         mode: str,
         ai_provider: str,
         limit: int,
@@ -181,88 +194,97 @@ class JobState:
             self.finished_at = ""
             self.returncode = None
             self.output = []
-            self.process = None
+            self.cancel_event = threading.Event()
             self.stop_requested = False
             self.user_message = ""
 
         thread = threading.Thread(
-            target=self._run_steps,
-            args=(steps, ai_provider),
+            target=self._run_job,
+            args=(command, preset, mode, ai_provider, limit, self.cancel_event),
             daemon=True,
         )
         thread.start()
         return True
 
-    def _run_steps(self, steps: list[list[str]], ai_provider: str) -> None:
+    def _run_job(
+        self,
+        command: str,
+        preset: str,
+        mode: str,
+        ai_provider: str,
+        limit: int,
+        cancel_event: threading.Event,
+    ) -> None:
         final_returncode = 0
         ollama_fallback_reported = False
 
         try:
-            for index, cmd in enumerate(steps, start=1):
-                with self.lock:
-                    if self.stop_requested:
-                        final_returncode = 130
-                        break
-                if ai_provider == "ollama" and not ollama_is_ready():
-                    if not ollama_fallback_reported:
-                        self.append("[gui] Ollama дайын емес. Резерв шаблон қолданылды.")
-                        ollama_fallback_reported = True
-                env = {**dict_env(), **ai_environment(ai_provider)}
-                self.append(f"[gui] қадам {index}/{len(steps)}: {' '.join(cmd)}")
-                returncode = self._run_process(cmd, env)
-                final_returncode = returncode
-                if returncode != 0:
-                    break
-        except Exception as exc:  # noqa: BLE001 - GUI must never crash the server.
-            self.append(f"[gui] команданы іске қосу сәтсіз: {exc}")
+            if ai_provider == "ollama" and not ollama_is_ready():
+                self.append("[gui] Ollama дайын емес. Резерв шаблон қолданылды.")
+                ollama_fallback_reported = True
+            with patched_environment(ai_environment(ai_provider)):
+                reset_ollama_cache()
+                with redirect_stdout(JobOutputStream(self)), redirect_stderr(JobOutputStream(self)):
+                    if preset == "daily_articles":
+                        print("[gui] Бүгінгі мақалалар жасалып жатыр")
+                        run_daily_workflow(
+                            mode=mode,
+                            limit=limit,
+                            ai_provider=ai_provider,
+                            cancel_event=cancel_event,
+                        )
+                    elif command == "collect":
+                        print("[gui] жаңалық жинау басталды")
+                        run_collect(mode=mode, cancel_event=cancel_event)
+                    elif command == "report":
+                        print("[gui] дайджест жасау басталды")
+                        run_report(mode=mode, cancel_event=cancel_event)
+                    elif command == "article":
+                        print("[gui] мақала жасау басталды")
+                        run_article(
+                            mode=mode,
+                            limit=limit,
+                            replace_today=True,
+                            cancel_event=cancel_event,
+                        )
+                    elif command == "all":
+                        print("[gui] жинау және дайджест басталды")
+                        run_collect(mode=mode, cancel_event=cancel_event)
+                        run_report(mode=mode, cancel_event=cancel_event)
+                    else:
+                        final_returncode = 1
+        except PipelineCancelled:
+            final_returncode = 130
+        except Exception:  # noqa: BLE001 - GUI must never crash the server.
+            LOGGER.exception("GUI job failed")
+            self.append("[gui] Қате болды. Толық ақпарат журналда.")
             final_returncode = 1
 
         with self.lock:
             self.running = False
             self.returncode = final_returncode
             self.finished_at = now_iso()
-            self.process = None
+            self.cancel_event = None
             summary = build_run_summary(self.output)
             if self.has_lmstudio_fallback():
                 summary = f"{summary}\nLM Studio табылмады, резерв шаблон қолданылды." if summary else "LM Studio табылмады, резерв шаблон қолданылды."
             if self.has_ollama_fallback():
                 summary = f"{summary}\nOllama дайын емес. Резерв шаблон қолданылды." if summary else "Ollama дайын емес. Резерв шаблон қолданылды."
+            if self.stop_requested and final_returncode == 130:
+                summary = "Жұмыс тоқтатылды."
             self.user_message = summary
-
-    def _run_process(self, cmd: list[str], env: dict[str, str]) -> int:
-        process = subprocess.Popen(
-            cmd,
-            cwd=PROJECT_ROOT,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        with self.lock:
-            self.process = process
-        assert process.stdout is not None
-        for line in process.stdout:
-            self.append(line.rstrip())
-        return process.wait()
 
     def stop(self) -> bool:
         with self.lock:
             if not self.running:
                 return False
             self.stop_requested = True
-            process = self.process
+            cancel_event = self.cancel_event
             self.output.append("[gui] тоқтату сұралды")
 
-        if process is not None and process.poll() is None:
-            process.terminate()
-            threading.Timer(5, self._kill_if_running, args=(process,)).start()
+        if cancel_event is not None:
+            cancel_event.set()
         return True
-
-    def _kill_if_running(self, process: subprocess.Popen[str]) -> None:
-        if process.poll() is None:
-            self.append("[gui] процесс уақытында тоқтамады; мәжбүрлеп тоқтатылады")
-            process.kill()
 
     def append(self, line: str) -> None:
         with self.lock:
@@ -302,6 +324,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/open-folder":
             self.send_json(open_today_folder())
+            return
+        if path == "/api/open-ollama-download":
+            webbrowser.open(DOWNLOAD_URL)
+            self.send_json({"ok": True, "url": DOWNLOAD_URL})
             return
         if path == "/api/ai-provider":
             self.handle_ai_provider()
@@ -422,22 +448,45 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        print(f"[gui] {self.address_string()} {format % args}")
+        LOGGER.info("%s %s", self.address_string(), format % args)
 
 
-def build_command(command: str, mode: str, limit: int, replace_today: bool = False) -> list[str]:
-    cmd = [sys.executable, "app/main.py", command, "--mode", mode]
-    if command == "article":
-        cmd.extend(["--limit", str(limit)])
-        if replace_today:
-            cmd.append("--replace-today")
-    return cmd
+class JobOutputStream:
+    def __init__(self, job: JobState) -> None:
+        self.job = job
+        self.buffer = ""
+
+    def write(self, text: str) -> int:
+        self.buffer += text
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            if line:
+                self.job.append(line.rstrip())
+        return len(text)
+
+    def flush(self) -> None:
+        if self.buffer:
+            self.job.append(self.buffer.rstrip())
+            self.buffer = ""
 
 
-def dict_env() -> dict[str, str]:
-    import os
+@contextmanager
+def patched_environment(values: dict[str, str]):
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
-    return dict(os.environ)
+
+def reset_ollama_cache() -> None:
+    ollama_writer._ollama_available_cache = None  # noqa: SLF001
+    ollama_writer._ollama_unavailable_logged = False  # noqa: SLF001
 
 
 def ai_environment(provider: str) -> dict[str, str]:
@@ -507,8 +556,9 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
     model_state = ollama_model_state() if refresh else dict(_OLLAMA_STATUS)
     available = bool(model_state["available"])
     state = str(status_file.get("state") or "").lower()
-    message = str(status_file.get("message") or "")
+    message = str(status_file.get("message") or status_file.get("text") or "")
     error = str(status_file.get("error") or "")
+    percent = int(status_file.get("percent") or 0)
 
     if available:
         return {
@@ -517,6 +567,28 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
             "status": "Дайын",
             "message": "Ollama дайын",
             "error": "",
+            "state": "ready",
+            "percent": 100,
+        }
+    if state in {"starting", "pulling", "running"}:
+        return {
+            "available": False,
+            "loading": True,
+            "status": "Дайындалып жатыр",
+            "message": message or "Ollama дайындалып жатыр",
+            "error": "",
+            "state": state,
+            "percent": percent,
+        }
+    if state == "ready":
+        return {
+            "available": False,
+            "loading": False,
+            "status": "Қате",
+            "message": "Ollama жауап бермеді",
+            "error": "Model status file ready, but /api/tags unavailable",
+            "state": "error",
+            "percent": 0,
         }
     if model_state["reachable"] and not model_state["model_present"]:
         model = ollama_model()
@@ -526,22 +598,18 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
             "status": "Қате",
             "message": f"Ollama моделі табылмады: {model}",
             "error": model_state["error"] or f"Model not found: {model}",
+            "state": "error",
+            "percent": 0,
         }
-    if state in {"starting", "pulling", "running"}:
-        return {
-            "available": False,
-            "loading": True,
-            "status": "Дайындалып жатыр",
-            "message": message or "Ollama дайындалып жатыр",
-            "error": "",
-        }
-    if state == "ready":
+    if state == "missing":
         return {
             "available": False,
             "loading": False,
-            "status": "Қате",
-            "message": "Ollama жауап бермеді",
-            "error": "Model status file ready, but /api/tags unavailable",
+            "status": "Ollama орнатылмаған",
+            "message": message or "Ollama орнатылмаған. ИИ үшін Ollama қажет.",
+            "error": error,
+            "state": "missing",
+            "percent": 0,
         }
     if state == "error":
         return {
@@ -550,6 +618,8 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
             "status": "Қате",
             "message": message or "Ollama қате",
             "error": error,
+            "state": "error",
+            "percent": 0,
         }
     return {
         "available": False,
@@ -557,6 +627,8 @@ def ollama_status_snapshot(refresh: bool = False) -> dict:
         "status": "Қосылмаған",
         "message": "Ollama қосылмаған",
         "error": "",
+        "state": "",
+        "percent": 0,
     }
 
 
@@ -640,7 +712,7 @@ def today_article_folder() -> Path:
 
 
 def today_article_folder_label() -> str:
-    return str(today_article_folder().relative_to(PROJECT_ROOT))
+    return display_path(today_article_folder())
 
 
 def latest_digest_path() -> Path | None:
@@ -656,7 +728,7 @@ def latest_digest(include_content: bool = False) -> dict:
         return {"path": "", "preview": ""}
     text = digest.read_text(encoding="utf-8", errors="replace") if include_content else read_text_preview(digest, 800)
     payload = {
-        "path": str(digest.relative_to(PROJECT_ROOT)),
+        "path": display_path(digest),
         "preview": text[:800],
     }
     if include_content:
@@ -677,7 +749,7 @@ def article_payload(path: Path) -> dict:
     body = strip_front_matter(text)
     metadata = article_front_matter(text)
     return {
-        "path": str(path.relative_to(PROJECT_ROOT)),
+        "path": display_path(path),
         "title": metadata.get("title") or article_title(text, body),
         "slot": metadata.get("slot", ""),
         "slot_label": metadata.get("slot_label", ""),
@@ -734,10 +806,19 @@ def open_today_folder() -> dict:
     except OSError:
         return {
             "ok": False,
-            "path": str(folder.relative_to(PROJECT_ROOT)),
+            "path": display_path(folder),
             "error": "Папканы автоматты ашу мүмкін болмады. Жолды қолмен ашыңыз.",
         }
-    return {"ok": True, "path": str(folder.relative_to(PROJECT_ROOT))}
+    return {"ok": True, "path": display_path(folder)}
+
+
+def display_path(path: Path) -> str:
+    for root in [PROJECT_ROOT, OUTPUT_DIR.parent, DATA_DIR.parent]:
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            continue
+    return str(path)
 
 
 def read_text_preview(path: Path, limit: int) -> str:
@@ -790,7 +871,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>geo-news-bot</title>
+  <title>GeoNewsBot</title>
   <style>
     :root {
       color-scheme: light;
@@ -916,6 +997,26 @@ INDEX_HTML = r"""<!doctype html>
       background: #fff;
       color: var(--muted);
       font-size: 12px;
+    }
+    .progress {
+      display: block;
+      width: 100%;
+      height: 10px;
+      margin-top: 8px;
+      border: 0;
+      border-radius: 999px;
+      background: #e6ebf2;
+      overflow: hidden;
+    }
+    .progress::-webkit-progress-bar { background: #e6ebf2; border-radius: 999px; }
+    .progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+    .progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+    .download-link {
+      display: none;
+      margin-top: 8px;
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--line);
     }
     .diag-grid {
       display: grid;
@@ -1046,7 +1147,7 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>geo-news-bot</h1>
+    <h1>GeoNewsBot</h1>
     <span id="latest" class="muted">дайджест: -</span>
   </header>
   <main>
@@ -1054,7 +1155,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="hero">
         <h2>Бүгінгі мақалалар</h2>
         <p>Жаңалықтарды жинап, дайджест жасап, 5 қазақша Markdown мақала дайындайды.</p>
-        <button id="daily" class="primary">Бүгінгі 5 мақаланы жасау</button>
+        <button id="daily" class="primary">Бүгінгі мақалаларды жасау</button>
       </div>
       <div class="actions">
         <div class="grid-2">
@@ -1081,31 +1182,30 @@ INDEX_HTML = r"""<!doctype html>
           <label for="aiProvider">ИИ режимі</label>
           <select id="aiProvider">
             <option value="none">Өшірулі</option>
-            <option value="lmstudio">LM Studio</option>
             <option value="ollama" selected>Ollama</option>
           </select>
-          <div id="lmHint" class="hint">LM Studio ашық және Local Server қосулы болуы керек. Әдепкі URL: http://host.docker.internal:1234/v1</div>
           <div id="aiState" class="ai-state">ИИ: Қосылмаған</div>
+          <progress id="modelProgress" class="progress" max="100" value="0"></progress>
+          <button id="ollamaDownload" class="download-link">Ollama жүктеу бетін ашу</button>
         </div>
       </details>
       <div class="status">
         <strong id="state">Дайын</strong>
         <div id="meta" class="muted">Бір батырмамен бүгінгі мақалаларды жасаңыз.</div>
-        <div id="lmNotice" class="notice">LM Studio табылмады, резерв шаблон қолданылды.</div>
         <div id="ollamaNotice" class="notice">Ollama дайын емес. Резерв шаблон қолданылды.</div>
       </div>
       <details>
         <summary>ИИ диагностика</summary>
         <div class="diag-grid">
-          <div><strong>Current AI provider:</strong> <span id="diagProvider">-</span></div>
-          <div><strong>Ollama status:</strong> <span id="diagOllama">-</span></div>
-          <div><strong>Last generation mode:</strong> <span id="diagMode">-</span></div>
-          <div><strong>Last reject reason:</strong> <span id="diagReject">-</span></div>
-          <div><strong>Bad phrase:</strong> <span id="diagBadPhrase">-</span></div>
-          <div><strong>Event keyword overlap:</strong> <span id="diagEventOverlap">-</span></div>
-          <div><strong>JSON parsed:</strong> <span id="diagJsonParsed">-</span></div>
-          <div><strong>Last model:</strong> <span id="diagModel">-</span></div>
-          <div><strong>Debug folder path:</strong> <span id="diagFolder">-</span></div>
+          <div><strong>ИИ режимі:</strong> <span id="diagProvider">-</span></div>
+          <div><strong>Ollama статусы:</strong> <span id="diagOllama">-</span></div>
+          <div><strong>Соңғы генерация:</strong> <span id="diagMode">-</span></div>
+          <div><strong>Қабылданбау себебі:</strong> <span id="diagReject">-</span></div>
+          <div><strong>Сапа белгісі:</strong> <span id="diagBadPhrase">-</span></div>
+          <div><strong>Оқиға сәйкестігі:</strong> <span id="diagEventOverlap">-</span></div>
+          <div><strong>JSON оқылды:</strong> <span id="diagJsonParsed">-</span></div>
+          <div><strong>Модель:</strong> <span id="diagModel">-</span></div>
+          <div><strong>Диагностика папкасы:</strong> <span id="diagFolder">-</span></div>
         </div>
         <pre id="diagRaw" class="raw-preview">Raw response preview тек DEBUG_AI_ARTICLES=true болса көрінеді.</pre>
         <pre id="diagRendered" class="raw-preview">Rendered preview тек DEBUG_AI_ARTICLES=true болса көрінеді.</pre>
@@ -1140,10 +1240,10 @@ INDEX_HTML = r"""<!doctype html>
     const viewer = document.querySelector("#viewer");
     const digestPath = document.querySelector("#digestPath");
     const digestPreview = document.querySelector("#digestPreview");
-    const lmNotice = document.querySelector("#lmNotice");
     const ollamaNotice = document.querySelector("#ollamaNotice");
-    const lmHint = document.querySelector("#lmHint");
     const aiState = document.querySelector("#aiState");
+    const modelProgress = document.querySelector("#modelProgress");
+    const ollamaDownload = document.querySelector("#ollamaDownload");
     const daily = document.querySelector("#daily");
     const collect = document.querySelector("#collect");
     const report = document.querySelector("#report");
@@ -1208,7 +1308,6 @@ INDEX_HTML = r"""<!doctype html>
       stop.disabled = !status.running;
       [daily, collect, report, article].forEach((button) => button.disabled = status.running);
       viewer.textContent = (status.output || []).join("\n") || "Журнал әзірге жоқ.";
-      lmNotice.style.display = status.lmstudio_fallback ? "block" : "none";
       ollamaNotice.style.display = status.ollama_fallback ? "block" : "none";
       renderAiStatus(status);
       renderAiDiagnostics(status);
@@ -1272,15 +1371,16 @@ INDEX_HTML = r"""<!doctype html>
         let label = status.ollama_status || "Қосылмаған";
         if (status.ollama_loading) label = "Дайындалып жатыр";
         if (status.ollama_available) label = "Дайын";
-        aiState.textContent = `Ollama: ${label}${model}`;
-        return;
-      }
-      if (aiProvider.value === "lmstudio") {
-        const model = status.current_model ? ` · Модель: ${status.current_model}` : "";
-        aiState.textContent = `LM Studio: ${status.lmstudio_available ? "Дайын" : "Қосылмаған"}${model}`;
+        const message = status.ollama_status_message ? ` · ${status.ollama_status_message}` : "";
+        aiState.textContent = `Ollama: ${label}${model}${message}`;
+        modelProgress.value = status.ollama_available ? 100 : (status.ollama_progress || 0);
+        modelProgress.style.display = (status.ollama_loading || status.ollama_available) ? "block" : "none";
+        ollamaDownload.style.display = status.ollama_missing ? "block" : "none";
         return;
       }
       aiState.textContent = "ИИ: Қосылмаған";
+      modelProgress.style.display = "none";
+      ollamaDownload.style.display = "none";
     }
 
     function renderAiDiagnostics(status) {
@@ -1335,8 +1435,11 @@ INDEX_HTML = r"""<!doctype html>
       const result = await getJSON("/api/open-folder", {method: "POST"});
       if (!result.ok) meta.textContent = `${result.error} ${result.path}`;
     });
+    ollamaDownload.addEventListener("click", async () => {
+      const result = await getJSON("/api/open-ollama-download", {method: "POST"});
+      if (result.url) meta.textContent = "Ollama жүктеу беті ашылды.";
+    });
     aiProvider.addEventListener("change", async () => {
-      lmHint.style.display = aiProvider.value === "lmstudio" ? "block" : "none";
       try {
         await getJSON("/api/ai-provider", {
           method: "POST",
@@ -1356,11 +1459,27 @@ INDEX_HTML = r"""<!doctype html>
 """
 
 
+def create_server(host: str = "127.0.0.1", preferred_port: int = 8000) -> tuple[ThreadingHTTPServer, int]:
+    last_error: OSError | None = None
+    for port in range(preferred_port, 8011):
+        try:
+            return ThreadingHTTPServer((host, port), Handler), port
+        except OSError as exc:
+            last_error = exc
+    raise OSError(f"Ports {preferred_port}-8010 are unavailable") from last_error
+
+
 def main() -> int:
+    configure_logging()
     host = os.getenv("GUI_HOST", "127.0.0.1")
-    port = 8000
+    preferred_port = int(os.getenv("GUI_PORT", "8000"))
+    server, port = create_server(host, preferred_port)
+    LOGGER.info("GUI listening on http://%s:%s", host, port)
     print(f"[gui] listening on http://{host}:{port}")
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
     return 0
 
 

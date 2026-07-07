@@ -7,7 +7,7 @@ import requests
 from app.services.ai_types import AITextResult
 
 
-DEFAULT_OLLAMA_URL = "http://ollama:11434"
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gpt-oss:20b"
 DEFAULT_OLLAMA_TIMEOUT = 180
 

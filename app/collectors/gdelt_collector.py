@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import Event
 from time import sleep
 
 import requests
@@ -24,9 +25,13 @@ def collect_gdelt(
     max_records: int = DEFAULT_MAX_RECORDS,
     delay_seconds: float = DEFAULT_DELAY_SECONDS,
     retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
+    cancel_event: Event | None = None,
 ) -> list[dict]:
     all_items: list[dict] = []
     for query in queries:
+        if cancel_event is not None and cancel_event.is_set():
+            print("[gdelt] тоқтату сұралды")
+            break
         params = {
             "query": query,
             "format": "json",
@@ -38,7 +43,8 @@ def collect_gdelt(
             response = fetch_gdelt(params=params, timeout=timeout)
             if response.status_code == 429:
                 print(f"[gdelt] сұрау '{query}': rate limit, {retry_delay_seconds} секунд күту")
-                sleep(retry_delay_seconds)
+                if wait_or_cancel(retry_delay_seconds, cancel_event):
+                    break
                 response = fetch_gdelt(params=params, timeout=timeout)
                 if response.status_code == 429:
                     print(f"[gdelt] сұрау '{query}': rate limit қайталанды, өткізіледі")
@@ -50,7 +56,7 @@ def collect_gdelt(
             continue
         finally:
             if delay_seconds > 0:
-                sleep(delay_seconds)
+                wait_or_cancel(delay_seconds, cancel_event)
 
         articles = payload.get("articles", [])
         query_items = [parse_article(article, query) for article in articles]
@@ -58,6 +64,13 @@ def collect_gdelt(
         print(f"[gdelt] {query}: {len(clean_items)} items")
         all_items.extend(clean_items)
     return all_items
+
+
+def wait_or_cancel(seconds: float, cancel_event: Event | None) -> bool:
+    if cancel_event is None:
+        sleep(seconds)
+        return False
+    return cancel_event.wait(seconds)
 
 
 def fetch_gdelt(params: dict, timeout: int) -> requests.Response:

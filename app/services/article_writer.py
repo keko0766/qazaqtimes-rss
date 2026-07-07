@@ -15,6 +15,8 @@ from app.services.ai_types import (
 )
 from app.services.ai_writer import generate_article_text
 from app.utils.datetime import today_str
+from app.utils.paths import ai_status_path as app_ai_status_path
+from app.utils.paths import data_dir as app_data_dir
 
 
 REQUIRED_JSON_FIELDS = AI_ARTICLE_JSON_FIELDS
@@ -1460,7 +1462,7 @@ def ai_decision_payload(
 
 
 def write_data_ai_debug(index: int, ai_result: AITextResult, rendered: str, decision: dict) -> None:
-    folder = Path("data") / "ai_debug" / today_str()
+    folder = Path(os.getenv("DATA_DIR", str(app_data_dir()))) / "ai_debug" / today_str()
     folder.mkdir(parents=True, exist_ok=True)
     prefix = f"{index:02d}"
     (folder / f"{prefix}_raw.md").write_text(ai_result.raw_response or "", encoding="utf-8")
@@ -1509,7 +1511,7 @@ def ai_debug_dir() -> Path:
 
 
 def ai_status_path() -> Path:
-    return Path("data") / "ai_status.json"
+    return Path(os.getenv("AI_STATUS_PATH", str(app_ai_status_path())))
 
 
 def has_broken_markdown(text: str) -> bool:
