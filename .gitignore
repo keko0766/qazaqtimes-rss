@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env
+.venv/
+.venv_deps/
 data/*.sqlite3
 data/*.log
 data/*.json

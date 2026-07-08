@@ -86,10 +86,6 @@ dist/GeoNewsBot.app
 
 The app bundles source code and `sources.json`. It does not bundle Ollama, `gpt-oss:20b`, SQLite databases, output files, or `.env`.
 
-## Developer Compatibility
-
-Docker files remain for development compatibility only. They are not part of the user runtime.
-
 Useful checks:
 
 ```bash

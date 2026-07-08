@@ -154,9 +154,7 @@ def run_daily_workflow(
     cancel_event: threading.Event | None = None,
 ) -> dict:
     previous_provider = os.environ.get("AI_PROVIDER")
-    previous_use_ollama = os.environ.get("USE_OLLAMA")
     os.environ["AI_PROVIDER"] = ai_provider
-    os.environ["USE_OLLAMA"] = "true" if ai_provider == "ollama" else "false"
     try:
         collect_result = run_collect(mode, cancel_event=cancel_event)
         check_cancelled(cancel_event)
@@ -178,10 +176,6 @@ def run_daily_workflow(
             os.environ.pop("AI_PROVIDER", None)
         else:
             os.environ["AI_PROVIDER"] = previous_provider
-        if previous_use_ollama is None:
-            os.environ.pop("USE_OLLAMA", None)
-        else:
-            os.environ["USE_OLLAMA"] = previous_use_ollama
 
 
 def collect(settings: dict, cancel_event: threading.Event | None = None) -> dict:

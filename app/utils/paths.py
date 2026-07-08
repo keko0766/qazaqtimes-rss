@@ -81,7 +81,6 @@ def configure_environment_defaults() -> None:
     os.environ.setdefault("SOURCES_PATH", str(sources_path()))
     os.environ.setdefault("OUTPUT_DIR", str(output_dir()))
     os.environ.setdefault("AI_PROVIDER", "ollama")
-    os.environ.setdefault("USE_OLLAMA", "true")
     os.environ.setdefault("OLLAMA_URL", "http://127.0.0.1:11434")
     os.environ.setdefault("OLLAMA_MODEL", "gpt-oss:20b")
     os.environ.setdefault("APP_TIMEZONE", "Asia/Almaty")

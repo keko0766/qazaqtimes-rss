@@ -15,28 +15,25 @@ ARTICLE_JSON_OPTIONS = {
     "temperature": 0.2,
     "top_p": 0.8,
     "repeat_penalty": 1.2,
-    "num_predict": 700,
+}
+
+STAGE_NUM_PREDICT = {
+    "facts": 600,
+    "outline": 500,
+    "article": 1400,
+    "verify": 500,
+    "repair": 1400,
 }
 
 _ollama_unavailable_logged = False
 _ollama_available_cache: bool | None = None
 
 
-def use_ollama() -> bool:
-    return os.getenv("USE_OLLAMA", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def generate_draft(cluster: dict) -> str | None:
-    prompt = build_prompt(cluster)
-    return generate_text(prompt, "мақала жобасын генерациялау")
-
-
-def generate_text(prompt: str, task_name: str = "мәтін генерациялау") -> str | None:
-    result = generate_text_result(prompt, task_name)
-    return result.text if result.text and not result.error_reason else None
-
-
-def generate_text_result(prompt: str, task_name: str = "мәтін генерациялау") -> AITextResult:
+def generate_text_result(
+    prompt: str,
+    task_name: str = "мәтін генерациялау",
+    stage: str = "article",
+) -> AITextResult:
     global _ollama_available_cache
     model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     if not ollama_available():
@@ -47,12 +44,16 @@ def generate_text_result(prompt: str, task_name: str = "мәтін генера�
             error_reason="ollama_not_ready",
         )
 
+    options = dict(ARTICLE_JSON_OPTIONS)
+    options["num_predict"] = STAGE_NUM_PREDICT.get(stage, STAGE_NUM_PREDICT["article"])
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": ARTICLE_JSON_OPTIONS,
+        "options": options,
     }
+    if model.lower().startswith("gpt-oss"):
+        payload["think"] = "low"
     base_url = os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
     timeout = ollama_timeout()
 

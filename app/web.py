@@ -14,7 +14,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -44,13 +44,10 @@ AI_STATUS_PATH = DATA_DIR / "ai_status.json"
 COMMANDS = {"collect", "report", "article", "all"}
 PRESETS = {"daily_articles"}
 MODES = {"fast", "normal"}
-AI_PROVIDERS = {"none", "ollama", "lmstudio"}
-LMSTUDIO_DEFAULT_URL = "http://host.docker.internal:1234/v1"
-LMSTUDIO_DEFAULT_MODEL = "openai/gpt-oss-20b"
+AI_PROVIDERS = {"none", "ollama"}
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 OLLAMA_DEFAULT_MODEL = "gpt-oss:20b"
 LOGGER = logging.getLogger(__name__)
-_LMSTUDIO_STATUS = {"checked_at": 0.0, "available": False}
 _OLLAMA_STATUS = {
     "checked_at": 0.0,
     "available": False,
@@ -80,7 +77,6 @@ class JobState:
     def snapshot(self) -> dict:
         selected_provider = self.ai_provider
         ollama_state = ollama_status_snapshot(refresh=selected_provider == "ollama")
-        lmstudio_ready = lmstudio_available(refresh=selected_provider == "lmstudio")
         with self.lock:
             ai_status = {} if self.running else latest_ai_status()
             return {
@@ -101,7 +97,6 @@ class JobState:
                 "today_folder": today_article_folder_label(),
                 "latest_digest": latest_digest(include_content=False),
                 "latest_articles": today_articles(limit=5),
-                "lmstudio_fallback": self.has_lmstudio_fallback(),
                 "ollama_fallback": self.has_ollama_fallback(),
                 "ollama_available": ollama_state["available"],
                 "ollama_loading": ollama_state["loading"],
@@ -112,7 +107,6 @@ class JobState:
                 "ollama_progress": ollama_state["percent"],
                 "ollama_missing": ollama_state["state"] == "missing",
                 "ollama_download_url": DOWNLOAD_URL,
-                "lmstudio_available": lmstudio_ready,
                 "current_model": current_model(selected_provider),
                 "last_ai_provider": ai_status.get("provider", ""),
                 "last_ai_model": ai_status.get("model", ""),
@@ -150,9 +144,6 @@ class JobState:
         if self.finished_at:
             return "Қате болды. Толық ақпарат журналда."
         return "Бір батырмамен бүгінгі мақалаларды жасаңыз."
-
-    def has_lmstudio_fallback(self) -> bool:
-        return any("LM Studio қолжетімсіз" in line for line in self.output)
 
     def has_ollama_fallback(self) -> bool:
         return any("Ollama дайын емес" in line or "[ollama] қолжетімсіз" in line for line in self.output)
@@ -216,12 +207,9 @@ class JobState:
         cancel_event: threading.Event,
     ) -> None:
         final_returncode = 0
-        ollama_fallback_reported = False
-
         try:
             if ai_provider == "ollama" and not ollama_is_ready():
                 self.append("[gui] Ollama дайын емес. Резерв шаблон қолданылды.")
-                ollama_fallback_reported = True
             with patched_environment(ai_environment(ai_provider)):
                 reset_ollama_cache()
                 with redirect_stdout(JobOutputStream(self)), redirect_stderr(JobOutputStream(self)):
@@ -266,8 +254,6 @@ class JobState:
             self.finished_at = now_iso()
             self.cancel_event = None
             summary = build_run_summary(self.output)
-            if self.has_lmstudio_fallback():
-                summary = f"{summary}\nLM Studio табылмады, резерв шаблон қолданылды." if summary else "LM Studio табылмады, резерв шаблон қолданылды."
             if self.has_ollama_fallback():
                 summary = f"{summary}\nOllama дайын емес. Резерв шаблон қолданылды." if summary else "Ollama дайын емес. Резерв шаблон қолданылды."
             if self.stop_requested and final_returncode == 130:
@@ -306,7 +292,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/digest":
             self.send_json(latest_digest(include_content=True))
             return
+        if path == "/api/article":
+            self.handle_article_content()
+            return
         self.send_error(404)
+
+    def handle_article_content(self) -> None:
+        parsed = urlparse(self.path)
+        article_path = parse_qs(parsed.query).get("path", [""])[0]
+        resolved = safe_today_article_path(article_path)
+        if resolved is None:
+            self.send_json({"ok": False, "error": "Мақала жолы қате"}, status=400)
+            return
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+        body = strip_front_matter(text)
+        metadata = article_front_matter(text)
+        self.send_json(
+            {
+                "ok": True,
+                "path": display_path(resolved),
+                "title": metadata.get("title") or article_title(text, body),
+                "content": body,
+            }
+        )
 
     def do_POST(self) -> None:
         if not self.is_local_request():
@@ -348,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         preset = str(payload.get("preset", "")).strip()
         mode = parse_mode(payload.get("mode", "fast"))
         limit = parse_limit(payload.get("limit", 5))
-        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"))
         if preset not in PRESETS:
             self.send_json({"ok": False, "error": "Preset қате"}, status=400)
             return
@@ -374,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
         command = str(payload.get("command", "")).strip()
         mode = parse_mode(payload.get("mode", "fast"))
         limit = parse_limit(payload.get("limit", 5))
-        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"))
         if command not in COMMANDS:
             self.send_json({"ok": False, "error": "Команда қате"}, status=400)
             return
@@ -397,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             self.send_json({"ok": False, "error": "JSON payload қате"}, status=400)
             return
-        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"), payload.get("use_ollama", False))
+        ai_provider = parse_ai_provider(payload.get("ai_provider", "ollama"))
         if ai_provider is None:
             self.send_json({"ok": False, "error": "ИИ режимі қате"}, status=400)
             return
@@ -491,14 +499,8 @@ def reset_ollama_cache() -> None:
 
 def ai_environment(provider: str) -> dict[str, str]:
     if provider == "ollama":
-        return {"AI_PROVIDER": "ollama", "USE_OLLAMA": "true"}
-    if provider == "lmstudio":
-        return {
-            "AI_PROVIDER": "lmstudio",
-            "USE_OLLAMA": "false",
-            "LMSTUDIO_URL": "http://host.docker.internal:1234/v1",
-        }
-    return {"AI_PROVIDER": "none", "USE_OLLAMA": "false"}
+        return {"AI_PROVIDER": "ollama"}
+    return {"AI_PROVIDER": "none"}
 
 
 def parse_mode(value: object) -> str | None:
@@ -506,12 +508,12 @@ def parse_mode(value: object) -> str | None:
     return mode if mode in MODES else None
 
 
-def parse_ai_provider(value: object, use_ollama: object = False) -> str | None:
+def parse_ai_provider(value: object) -> str | None:
     provider = str(value or "").strip().lower()
     if provider in AI_PROVIDERS:
         return provider
     if not provider:
-        return "ollama" if bool(use_ollama) else "none"
+        return "none"
     return None
 
 
@@ -525,29 +527,9 @@ def parse_limit(value: object) -> int | None:
     return None
 
 
-def lmstudio_available(refresh: bool = False) -> bool:
-    now = time.time()
-    if not refresh and now - float(_LMSTUDIO_STATUS["checked_at"]) < 5:
-        return bool(_LMSTUDIO_STATUS["available"])
-    try:
-        response = requests.get(f"{lmstudio_url()}/models", timeout=1.5)
-        ready = response.ok
-    except requests.RequestException:
-        ready = False
-    _LMSTUDIO_STATUS["checked_at"] = now
-    _LMSTUDIO_STATUS["available"] = ready
-    return ready
-
-
-def lmstudio_url() -> str:
-    return os.getenv("LMSTUDIO_URL", LMSTUDIO_DEFAULT_URL).rstrip("/")
-
-
 def current_model(provider: str) -> str:
     if provider == "ollama":
         return ollama_model()
-    if provider == "lmstudio":
-        return os.getenv("LMSTUDIO_MODEL", LMSTUDIO_DEFAULT_MODEL)
     return ""
 
 
@@ -742,6 +724,38 @@ def today_articles(limit: int = 5) -> list[dict]:
         return []
     articles = sorted(folder.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
     return [article_payload(path) for path in articles]
+
+
+def safe_today_article_path(article_path: str) -> Path | None:
+    if not article_path or "\x00" in article_path:
+        return None
+    if ".." in Path(article_path).parts:
+        return None
+    folder = today_article_folder().resolve()
+    candidate = Path(article_path)
+    if not candidate.is_absolute():
+        for root in [PROJECT_ROOT, OUTPUT_DIR.parent, DATA_DIR.parent]:
+            possible = (root / candidate).resolve()
+            if is_path_in_folder(possible, folder):
+                candidate = possible
+                break
+        else:
+            candidate = (folder / candidate.name).resolve()
+    else:
+        candidate = candidate.resolve()
+    if not is_path_in_folder(candidate, folder):
+        return None
+    if candidate.suffix != ".md" or not candidate.is_file():
+        return None
+    return candidate
+
+
+def is_path_in_folder(path: Path, folder: Path) -> bool:
+    try:
+        path.relative_to(folder)
+        return True
+    except ValueError:
+        return False
 
 
 def article_payload(path: Path) -> dict:
@@ -1090,6 +1104,19 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 13px;
       white-space: pre-wrap;
     }
+    .full-article {
+      margin: 10px 0 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+      color: var(--ink);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      max-height: 520px;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     .card-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1264,6 +1291,8 @@ INDEX_HTML = r"""<!doctype html>
     const diagFolder = document.querySelector("#diagFolder");
     const diagRaw = document.querySelector("#diagRaw");
     const diagRendered = document.querySelector("#diagRendered");
+    const expandedArticlePaths = new Set();
+    const articleContentCache = new Map();
 
     async function getJSON(url, options) {
       const response = await fetch(url, options);
@@ -1316,6 +1345,39 @@ INDEX_HTML = r"""<!doctype html>
       return status;
     }
 
+    function articleKey(item) {
+      return item.path || item.id || item.title || "";
+    }
+
+    async function fetchArticleContent(item) {
+      const key = articleKey(item);
+      if (!key) throw new Error("Мақала жолы жоқ");
+      if (articleContentCache.has(key)) return articleContentCache.get(key);
+      const data = await getJSON(`/api/article?path=${encodeURIComponent(key)}`);
+      const content = data.content || "";
+      articleContentCache.set(key, content);
+      return content;
+    }
+
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (error) {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand("copy");
+        area.remove();
+        if (!ok) throw error;
+        return true;
+      }
+    }
+
     async function refreshAll() {
       try {
         await refreshStatus();
@@ -1331,31 +1393,53 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       articles.innerHTML = items.map((item, index) => `
-        <article class="card">
+        <article class="card" data-article-path="${escapeHTML(articleKey(item))}">
           <h3>${escapeHTML(item.title || "Мақала")}</h3>
           ${item.slot_label ? `<div class="slot-label">${escapeHTML(item.slot_label)}</div>` : ""}
           <div class="path">${escapeHTML(item.path)}</div>
           <p class="preview">${escapeHTML(item.preview || "")}</p>
           <div class="card-actions">
             <button class="ghost" data-copy="${index}">Көшіру</button>
-            <button class="ghost" data-view="${index}">Толық көру</button>
+            <button class="ghost" data-view="${index}">${expandedArticlePaths.has(articleKey(item)) ? "Жасыру" : "Толық көру"}</button>
           </div>
+          ${expandedArticlePaths.has(articleKey(item)) ? `<pre class="full-article" data-full="${escapeHTML(articleKey(item))}">${escapeHTML(articleContentCache.get(articleKey(item)) || "Жүктеліп жатыр...")}</pre>` : ""}
         </article>
       `).join("");
+      items.forEach((item) => {
+        const key = articleKey(item);
+        if (!expandedArticlePaths.has(key) || articleContentCache.has(key)) return;
+        fetchArticleContent(item)
+          .then(() => renderArticles(items))
+          .catch((error) => {
+            articleContentCache.set(key, error.message);
+            renderArticles(items);
+          });
+      });
       articles.querySelectorAll("[data-copy]").forEach((button) => {
         button.addEventListener("click", async () => {
           const item = items[Number(button.dataset.copy)];
           const slot = item.slot_label ? `${item.slot_label}\n` : "";
-          await navigator.clipboard.writeText(`${item.title}\n${slot}${item.path}\n\n${item.preview}`);
+          const full = await fetchArticleContent(item);
+          await copyText(`${item.title}\n${slot}${item.path}\n\n${full}`);
           button.textContent = "Көшірілді";
         });
       });
       articles.querySelectorAll("[data-view]").forEach((button) => {
-        button.addEventListener("click", () => {
+        button.addEventListener("click", async () => {
           const item = items[Number(button.dataset.view)];
-          const slot = item.slot_label ? `${item.slot_label}\n` : "";
-          viewer.textContent = `${item.path}\n${slot}\n${item.preview}`;
-          window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"});
+          const key = articleKey(item);
+          if (expandedArticlePaths.has(key)) {
+            expandedArticlePaths.delete(key);
+            renderArticles(items);
+            return;
+          }
+          expandedArticlePaths.add(key);
+          renderArticles(items);
+          try {
+            await fetchArticleContent(item);
+          } finally {
+            renderArticles(items);
+          }
         });
       });
     }

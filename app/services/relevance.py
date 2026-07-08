@@ -95,6 +95,55 @@ BLACKLIST_KEYWORDS = {
     "cybersecurity",
 }
 
+WEATHER_DISASTER_KEYWORDS = {
+    "typhoon",
+    "hurricane",
+    "cyclone",
+    "storm",
+    "flood",
+    "flooding",
+    "earthquake",
+    "wildfire",
+    "weather",
+}
+
+WEATHER_DISASTER_EXCEPTION_KEYWORDS = {
+    "interstate conflict",
+    "military action",
+    "military",
+    "missile",
+    "strike",
+    "airstrike",
+    "war",
+    "invasion",
+    "border clash",
+    "sanctions",
+    "diplomatic crisis",
+    "critical infrastructure",
+    "geopolitical infrastructure",
+    "energy security",
+    "pipeline security",
+    "port security",
+}
+
+CHINA_INFLUENCE_SIGNALS = {
+    "taiwan",
+    "missile",
+    "military",
+    "nuclear",
+    "sanctions",
+    "trade pressure",
+    "territorial dispute",
+    "south china sea",
+    "belt and road",
+    "central asia influence",
+    "strategic investment",
+    "diplomatic pressure",
+    "usa/china tension",
+    "u.s.-china tension",
+    "us-china tension",
+}
+
 BLACKLIST_EXCEPTIONS = {
     "war",
     "sanctions",
@@ -109,6 +158,9 @@ def is_relevant_item(item: dict) -> bool:
         return False
 
     text = item_text(item)
+    if is_weather_disaster_noise(text):
+        return False
+
     tags = set(item.get("tags") or [])
     has_geo_tag = bool(tags & IMPORTANT_TAGS)
     has_geo_keyword = any(keyword_in_text(text, keyword) for keyword in RELEVANCE_KEYWORDS)
@@ -141,6 +193,24 @@ def has_blacklisted_topic(text: str, tags: set[str]) -> bool:
     if any(keyword_in_text(text, keyword) for keyword in BLACKLIST_EXCEPTIONS - {"diplomacy"}):
         return False
     return True
+
+
+def is_weather_disaster_noise(text: str) -> bool:
+    if not any(keyword_in_text(text, keyword) for keyword in WEATHER_DISASTER_KEYWORDS):
+        return False
+    if has_geopolitical_weather_exception(text):
+        return False
+    if keyword_in_text(text, "evacuation") or keyword_in_text(text, "evacuate") or keyword_in_text(text, "evacuates"):
+        return True
+    return True
+
+
+def has_geopolitical_weather_exception(text: str) -> bool:
+    return any(keyword_in_text(text, keyword) for keyword in WEATHER_DISASTER_EXCEPTION_KEYWORDS)
+
+
+def has_china_influence_signal(text: str) -> bool:
+    return any(keyword_in_text(text, keyword) for keyword in CHINA_INFLUENCE_SIGNALS)
 
 
 def is_domestic_noise(text: str, tags: set[str]) -> bool:

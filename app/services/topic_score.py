@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.relevance import keyword_in_text
+from app.services.relevance import has_china_influence_signal, keyword_in_text
 
 
 def is_usa_iran(tags: set[str]) -> bool:
@@ -33,25 +33,16 @@ def is_china_taiwan(tags: set[str], text: str) -> bool:
 
 
 def is_china_influence(tags: set[str], text: str) -> bool:
+    has_china = bool(tags & {"china", "taiwan", "belt_and_road"}) or any(
+        keyword_in_text(text, word) for word in ("china", "chinese", "beijing", "taiwan", "taipei")
+    )
+    if not has_china:
+        return False
     if tags & {"china_influence", "china_aggression", "grey_zone", "south_china_sea", "belt_and_road"}:
-        return True
+        return has_china_influence_signal(text)
     if not tags & {"china", "taiwan", "belt_and_road"}:
         return False
-    qualifiers = {
-        "taiwan pressure",
-        "military pressure",
-        "grey zone",
-        "gray zone",
-        "coercion",
-        "coercive",
-        "influence operation",
-        "influence operations",
-        "south china sea",
-        "belt and road",
-        "central asia",
-        "kazakhstan",
-    }
-    return any(keyword_in_text(text, word) for word in qualifiers)
+    return has_china_influence_signal(text)
 
 
 def is_kazakhstan_domestic(tags: set[str], text: str) -> bool:
